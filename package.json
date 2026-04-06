@@ -1,15 +1,16 @@
 {
   "name": "auto-pixai",
-  "version": "1.6.0",
-  "description": "自動領取pixai.art獎勵",
+  "version": "1.7.0",
+  "description": "Automatic PixAI daily reward claimer",
   "main": "app.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node app.js"
   },
   "author": "Mr-Smilin",
   "license": "ISC",
   "dependencies": {
-    "puppeteer": "^22.6.3",
+    "puppeteer": "^22.8.2",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   }

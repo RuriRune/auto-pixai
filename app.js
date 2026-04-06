@@ -1,18 +1,19 @@
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 puppeteer.use(StealthPlugin());
+
 const url = "https://pixai.art/login";
-// 因為 window 的 USERNAME 撞名
+
 const username = process.env.LOGINNAME ? process.env.LOGINNAME : undefined;
 const password = process.env.PASSWORD ? process.env.PASSWORD : undefined;
-// 如果需要在本地運行，請將這裡改成 false
+
 const isDocker = true;
-// 如果需要背景執行，請將 headless 設置為 true
 const headless = true;
-// 重試次數上限
+
 const tryCountMax = 3;
-// 重試次數
 let tryCount = 0;
+
+const LANG = process.env.APP_LANG || "en-GB";
 
 function delay(time) {
 	return new Promise(function (resolve) {
@@ -21,9 +22,10 @@ function delay(time) {
 }
 
 async function loginAndScrape(url, username, password, isDocker, headless) {
-	console.log("帳號：", username);
+	console.log("Username:", username);
+
 	if (username == undefined || password == undefined) {
-		throw new Error("請在環境變數設置帳號密碼");
+		throw new Error("Please set username and password in environment variables");
 	}
 
 	let config = {
@@ -39,39 +41,46 @@ async function loginAndScrape(url, username, password, isDocker, headless) {
 				"--disable-setuid-sandbox",
 				"--no-sandbox",
 				"--no-zygote",
+				"--lang=" + LANG
 			],
 		};
 	}
 
-	// 使用 Puppeteer 進行模擬瀏覽器操作
-	const browser = await puppeteer.launch(config); //
-
+	const browser = await puppeteer.launch(config);
 	const page = await browser.newPage();
 
-	// 修改 UA，模擬真實瀏覽器
 	await page.setUserAgent(
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-			"AppleWebKit/537.36 (KHTML, like Gecko) " +
-			"Chrome/120.0.0.0 Safari/537.36"
+		"AppleWebKit/537.36 (KHTML, like Gecko) " +
+		"Chrome/120.0.0.0 Safari/537.36"
 	);
+
+	await page.setExtraHTTPHeaders({
+		"Accept-Language": `${LANG},en;q=0.9`
+	});
+
+	await page.evaluateOnNewDocument(() => {
+		Object.defineProperty(navigator, "language", {
+			get: () => "en-GB"
+		});
+		Object.defineProperty(navigator, "languages", {
+			get: () => ["en-GB", "en"]
+		});
+	});
 
 	try {
 		await page.goto(url);
 	} catch (error) {
-		console.error("訪問 URL 失敗:", error);
+		console.error("Failed to access URL:", error);
 		tryCount++;
 		if (tryCount <= tryCountMax) {
 			return await loginAndScrape(url, username, password, isDocker, headless);
 		} else {
-			throw new Error("重試訪問 URL 失敗");
+			throw new Error("Retry failed: access URL");
 		}
 	}
 
-	// 點擊取消初始畫面
 	try {
-		// 1.1.1 舊版畫面
-		// await page.waitForSelector('div[id="root"] > div > div > button');
-		// await page.click('div[id="root"] > div > div > button');
 		await delay(300);
 		await page.waitForSelector(
 			'div[id="root"] > div > div > div > div > div form > div > div button:last-of-type'
@@ -82,43 +91,36 @@ async function loginAndScrape(url, username, password, isDocker, headless) {
 		);
 		await delay(3000);
 	} catch (error) {
-		console.error("點擊取消初始畫面失敗:", error);
-		// tryCount++;
-		// if (tryCount <= tryCountMax) {
-		// 	return await loginAndScrape(url, username, password, isDocker, headless);
-		// } else {
-		// 	throw new Error("重試點擊取消初始畫面失敗");
-		// }
+		console.error("Failed to dismiss initial popup:", error);
 	}
 
 	try {
-		console.log("登入");
+		console.log("Logging in");
 		await login(page, username, password);
 	} catch (error) {
-		console.error("登入失敗:", error);
+		console.error("Login failed:", error);
 		tryCount++;
 		if (tryCount <= tryCountMax) {
 			return await loginAndScrape(url, username, password, isDocker, headless);
 		} else {
-			throw new Error("重試登入失敗");
+			throw new Error("Retry failed: login");
 		}
 	}
 
 	try {
-		console.log("直接從彈出視窗領取每日獎勵");
+		console.log("Claiming daily reward (popup)");
 		await claimCreditFromPop(page);
 	} catch (error) {
-		console.error("彈出視窗領取每日獎勵失敗:", error);
+		console.error("Popup claim failed:", error);
 		tryCount++;
 		if (tryCount <= tryCountMax) {
-			console.log("嘗試改用原本方法領取每日獎勵");
+			console.log("Falling back to original method");
 			await originalScrape(url, username, password, isDocker, headless, page);
 		} else {
-			throw new Error("彈出視窗領取每日獎勵失敗");
+			throw new Error("Popup claim failed");
 		}
 	}
 
-	// 爬取完成後，關閉瀏覽器
 	await browser.close();
 }
 
@@ -131,46 +133,30 @@ async function originalScrape(
 	page
 ) {
 	try {
-		console.log("展開使用者列表");
+		console.log("Opening profile menu");
 		await selectProfileButton(page);
 	} catch (error) {
-		console.error("展開使用者列表失敗:", error);
-		tryCount++;
-		if (tryCount <= tryCountMax) {
-			return await loginAndScrape(url, username, password, isDocker, headless);
-		} else {
-			throw new Error("重試展開使用者列表失敗");
-		}
+		console.error("Failed opening profile menu:", error);
+		throw error;
 	}
 
 	try {
-		console.log("點擊檔案列表");
+		console.log("Opening profile");
 		await clickProfile(page);
 	} catch (error) {
-		console.error("點擊檔案列表失敗:", error);
-		tryCount++;
-		if (tryCount <= tryCountMax) {
-			return await loginAndScrape(url, username, password, isDocker, headless);
-		} else {
-			throw new Error("重試點擊檔案列表失敗");
-		}
+		console.error("Failed opening profile:", error);
+		throw error;
 	}
 
 	try {
-		console.log("領取每日獎勵");
+		console.log("Claiming daily reward");
 		await claimCredit(page);
 	} catch (error) {
-		console.error("領取每日獎勵失敗:", error);
-		tryCount++;
-		if (tryCount <= tryCountMax) {
-			return await loginAndScrape(url, username, password, isDocker, headless);
-		} else {
-			throw new Error("重試領取每日獎勵失敗");
-		}
+		console.error("Claim failed:", error);
+		throw error;
 	}
 }
 
-//#region 登入
 async function login(page, username, password) {
 	await page.type("#email-input", username);
 	await page.type("#password-input", password);
@@ -179,22 +165,17 @@ async function login(page, username, password) {
 	await page.click('button[type="submit"]');
 	await delay(6000);
 	try {
-		await page.$eval('button[type="submit"]', (button) => button.clcik());
+		await page.$eval('button[type="submit"]', (button) => button.click());
 		await delay(3000);
 	} catch {}
 }
 
-//#endregion
-
-//#region 點擊彈窗
 async function checkPopup(page) {
 	try {
-		// check for popup
 		await page.click('//*[@id="app"]/body/div[4]/div[3]/div/div[2]/div/button');
 		return true;
 	} catch {
 		try {
-			// check for popup for browser is fullscreen
 			await page.click('//*[@id="app"]/body/div[2]/div[3]/div/div/button');
 			return true;
 		} catch {
@@ -202,58 +183,20 @@ async function checkPopup(page) {
 		}
 	}
 }
-//#endregion
 
-//#region 點擊頁首圖標
 async function selectProfileButton(page) {
 	while (true) {
-		// try {
-		// 	// 確認是否已登入
-		// 	console.log("確認是否已登入");
-		// 	try {
-		// 		await page.click('button[type="submit"]');
-		// 	} catch {}
-		// 	let headerText = await page.$eval(
-		// 		"header > div:nth-of-type(2)",
-		// 		(el) => el.innerText
-		// 	);
-		// 	// 適配 UI 版本
-		// 	if (headerText == null)
-		// 		headerText = await page.$eval(
-		// 			"header > div:nth-of-type(1)",
-		// 			(el) => el.innerText
-		// 		);
-		// 	if (
-		// 		!headerText ||
-		// 		headerText.includes("Sign Up") ||
-		// 		headerText.includes("Log in")
-		// 	) {
-		// 		console.log("未登入");
-		// 		continue;
-		// 	} else {
-		// 		console.log("已登入");
-		// 		throw new Error();
-		// 	}
-		// } catch {
-		//  await delay(300);
-		const isPopupClosed = await checkPopup(page);
+		await checkPopup(page);
 		try {
-			// 檢查個人資料頭像並點擊
-			console.log("點擊頭像");
 			await page.$eval("header > button:nth-of-type(2)", (el) => el.click());
-			console.log("成功");
 			await delay(300);
 			break;
 		} catch (err) {
 			throw new Error(err);
 		}
-		// }
 		await delay(49);
 	}
 }
-//#endregion
-
-//#region 點擊個人檔案
 
 async function clickProfile(page) {
 	await page.waitForSelector(
@@ -261,7 +204,6 @@ async function clickProfile(page) {
 	);
 	while (true) {
 		try {
-			// 在下拉式選單中找到並點擊個人資料按鈕
 			await page.click("div[role='menu'] > a[role='menuitem']:nth-of-type(1)");
 			await delay(300);
 			break;
@@ -271,118 +213,81 @@ async function clickProfile(page) {
 	}
 }
 
-//#endregion
-
-//#region 點擊每日獎勵
 async function claimCredit(page) {
 	await page.waitForSelector(
 		"section > div > div:nth-of-type(2) > div:nth-of-type(2) > button"
 	);
 	let isClaimed = false;
-	checkIsClaimed: while (true) {
+
+	while (true) {
 		try {
-			if (isClaimed) {
-				break;
-			}
-			while (true) {
-				// 領取！
-				await page.click(
-					"section > div > div:nth-of-type(1) > div:nth-of-type(2) > button"
-				);
-				await delay(300);
-				await page.reload();
-				await delay(5000);
-				const updatedClaimBtnText = await page.$eval(
-					"section > div > div:nth-of-type(1) > div:nth-of-type(2) > button > span",
-					(el) => el.innerText
-				);
+			if (isClaimed) break;
 
-				await delay(300);
+			await page.click(
+				"section > div > div:nth-of-type(1) > div:nth-of-type(2) > button"
+			);
+			await delay(300);
+			await page.reload();
+			await delay(5000);
 
-				// 確認是不是 "Claimed"
-				if (
-					updatedClaimBtnText.toLowerCase() === "claimed" ||
-					updatedClaimBtnText.toLowerCase() === "已認領" ||
-					updatedClaimBtnText.toLowerCase() === "已认领" ||
-					updatedClaimBtnText.toLowerCase() === "申請済み"
-				) {
-					console.log("領取成功");
-					isClaimed = true;
-					continue checkIsClaimed;
-				}
+			const updatedClaimBtnText = await page.$eval(
+				"section > div > div:nth-of-type(1) > div:nth-of-type(2) > button > span",
+				(el) => el.innerText
+			);
+
+			const text = updatedClaimBtnText.toLowerCase();
+
+			if (
+				text.includes("claimed") ||
+				text.includes("已認領") ||
+				text.includes("已认领") ||
+				text.includes("申請済み")
+			) {
+				console.log("Claim successful");
+				isClaimed = true;
 			}
 		} catch {
 			if (!(await checkPopup(page))) {
 				await delay(500);
-				if (!isClaimed) {
-					continue checkIsClaimed;
-				} else {
-					console.log("已領取獎勵");
+				if (isClaimed) {
+					console.log("Already claimed");
 					break;
 				}
 			}
-			continue checkIsClaimed;
 		}
 	}
 }
-//#endregion
 
-//#region 彈出視窗領取每日獎勵
 async function claimCreditFromPop(page) {
 	await page.waitForSelector("section > div > div > button");
 	let isClaimed = false;
-	checkIsClaimed: while (true) {
+
+	while (true) {
 		try {
-			if (isClaimed) {
-				break;
-			}
-			while (true) {
-				// 領取！
-				await page.click("section > div > div > button");
-				await delay(300);
-				await page.reload();
-				await delay(5000);
-				// const updatedClaimBtnText = await page.$eval(
-				// 	"section > div > div > button > span:nth-of-type(2)",
-				// 	(el) => el.innerText
-				// );
+			if (isClaimed) break;
 
-				// await delay(300);
-
-				// // 確認是不是 "close"
-				// if (
-				// 	updatedClaimBtnText.toLowerCase().includes("close") ||
-				// 	updatedClaimBtnText.toLowerCase().includes("關閉") ||
-				// 	updatedClaimBtnText.toLowerCase().includes("关闭") ||
-				// 	updatedClaimBtnText.toLowerCase().includes("閉鎖")
-				// ) {
-				// 	console.log("領取成功");
-				// 	isClaimed = true;
-				// 	continue checkIsClaimed;
-				// }
-			}
+			await page.click("section > div > div > button");
+			await delay(300);
+			await page.reload();
+			await delay(5000);
 		} catch {
 			if (!(await checkPopup(page))) {
 				await delay(500);
-				if (!isClaimed) {
-					continue checkIsClaimed;
-				} else {
-					console.log("已領取獎勵");
+				if (isClaimed) {
+					console.log("Already claimed");
 					break;
 				}
 			}
-			continue checkIsClaimed;
 		}
 	}
 }
-//#endregion
 
 loginAndScrape(url, username, password, isDocker, headless)
 	.then(() => {
-		console.log("領取完畢");
+		console.log("Completed");
 		process.exit(0);
 	})
 	.catch((error) => {
-		console.error("異常：", error);
+		console.error("Error:", error);
 		process.exit(1);
 	});
