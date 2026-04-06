@@ -1,16 +1,11 @@
-require('dotenv').config(); // MUST BE LINE 1
+require('dotenv').config();
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 puppeteer.use(StealthPlugin());
 
-const url = "https://pixai.art/login";
-const username = process.env.LOGINNAME || undefined;
-const password = process.env.PASSWORD || undefined;
+const url = "https://pixai.art";
 const COOKIE_STRING = process.env.PIXAI_COOKIE || "";
 const isDocker = process.env.IS_DOCKER !== 'false';
-const headless = true;
-const tryCountMax = 3;
-let tryCount = 0;
 const LANG = process.env.APP_LANG || "en-GB";
 
 function delay(time) {
@@ -18,7 +13,10 @@ function delay(time) {
 }
 
 async function applyCookies(page) {
-    if (!COOKIE_STRING) return;
+    if (!COOKIE_STRING) {
+        console.error("[ERROR] No PIXAI_COOKIE found in environment variables.");
+        return;
+    }
     const cookies = COOKIE_STRING.split(";").map(c => {
         const [name, ...rest] = c.trim().split("=");
         return {
@@ -32,78 +30,99 @@ async function applyCookies(page) {
     console.log("[AUTH] Cookies applied to session.");
 }
 
-async function loginAndScrape() {
-    console.log("[INFO] Starting PixAI Auto-Claimer...");
+async function smartClaim(page) {
+    console.log("[PROCESS] Starting Smart Search for claim buttons...");
+    
+    // Give the page 5 seconds to load any annoying popups
+    await delay(5000);
 
-    if (!COOKIE_STRING && (!username || !password)) {
-        throw new Error("Missing Credentials: Set LOGINNAME/PASSWORD or PIXAI_COOKIE");
+    const result = await page.evaluate(() => {
+        // List of keywords PixAI uses for daily rewards
+        const keywords = ['claim', 'get', 'collect', 'check-in', 'receive', 'daily', 'credits'];
+        
+        // Find all clickable elements
+        const elements = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
+        
+        // Filter for elements that contain our keywords and are actually visible
+        const target = elements.find(el => {
+            const text = el.innerText.toLowerCase();
+            const isVisible = el.offsetWidth > 0 && el.offsetHeight > 0;
+            return keywords.some(k => text.includes(k)) && isVisible;
+        });
+
+        if (target) {
+            target.click();
+            return { success: true, text: target.innerText.trim() };
+        }
+        return { success: false };
+    });
+
+    if (result.success) {
+        console.log(`[SUCCESS] Found and clicked: "${result.text}"`);
+        await delay(2000); // Wait for click to register
+    } else {
+        console.log("[NOTICE] No claim button found in popup. Trying fallback navigation...");
+        // Fallback: Go directly to the credit page if the popup didn't show
+        await page.goto("https://pixai.art/generator/credit", { waitUntil: "networkidle2" });
+        await delay(3000);
+        
+        // Try one more search on the credit page
+        const fallbackResult = await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const claimBtn = btns.find(b => b.innerText.toLowerCase().includes('claim'));
+            if (claimBtn) { claimBtn.click(); return true; }
+            return false;
+        });
+        
+        if (fallbackResult) {
+            console.log("[SUCCESS] Claimed via Credits page fallback.");
+        } else {
+            console.log("[CRITICAL] All claim methods failed. Button might not be available yet.");
+        }
     }
+}
 
-    let config = { 
-        headless: "new", // "new" is better for modern Puppeteer
+async function run() {
+    console.log("[INFO] Starting PixAI Auto-Claimer (Plan B)...");
+
+    const config = { 
+        headless: "new",
         executablePath: isDocker ? "/usr/bin/google-chrome" : undefined,
         args: isDocker ? [
             "--disable-gpu", 
             "--disable-setuid-sandbox", 
             "--no-sandbox", 
             "--no-zygote", 
-            "--disable-dev-shm-usage", // CRITICAL for Unraid
+            "--disable-dev-shm-usage",
             `--lang=${LANG}`
         ] : []
     };
 
     const browser = await puppeteer.launch(config);
     const page = await browser.newPage();
-
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
 
     try {
         console.log("[NAV] Navigating to PixAI...");
-        await page.goto("https://pixai.art", { waitUntil: "networkidle2" });
-        await applyCookies(page);
-        await page.reload({ waitUntil: "networkidle2" });
         await page.goto(url, { waitUntil: "networkidle2" });
+        
+        await applyCookies(page);
+        
+        // Reload to ensure login state is active
+        await page.reload({ waitUntil: "networkidle2" });
+        console.log("[AUTH] Session active.");
+
+        await smartClaim(page);
+
     } catch (error) {
-        console.error("[ERROR] Navigation failed:", error.message);
+        console.error("[FATAL ERROR]", error.message);
+    } finally {
         await browser.close();
-        if (++tryCount <= tryCountMax) return loginAndScrape();
-        process.exit(1);
+        console.log("[EXIT] Process completed.");
     }
-
-    try {
-        if (!COOKIE_STRING) {
-            console.log("[AUTH] Logging in with credentials...");
-            await page.waitForSelector("#email-input", { timeout: 10000 });
-            await page.type("#email-input", username);
-            await page.type("#password-input", password);
-            await page.click('button[type="submit"]');
-            await delay(6000);
-        } else {
-            console.log("[AUTH] Using cookies, skipping login screen.");
-        }
-
-        console.log("[PROCESS] Attempting to claim reward...");
-        // Added some delay to let popups appear
-        await delay(3000);
-        await claimCreditFromPop(page);
-    } catch (error) {
-        console.error("[NOTICE] Popup claim failed, trying fallback menu method...");
-        try {
-            await selectProfileButton(page);
-            await clickProfile(page);
-            await claimCredit(page);
-        } catch (fError) {
-            console.error("[CRITICAL] All claim methods failed.");
-        }
-    }
-
-    await browser.close();
-    console.log("[EXIT] Process completed.");
 }
 
-// ... (Rest of your helper functions remain the same)
-
-loginAndScrape().catch(err => {
-    console.error("[FATAL ERROR]", err);
+run().catch(err => {
+    console.error(err);
     process.exit(1);
 });
