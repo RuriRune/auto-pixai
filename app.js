@@ -7,6 +7,8 @@ const url = "https://pixai.art/login";
 const username = process.env.LOGINNAME ? process.env.LOGINNAME : undefined;
 const password = process.env.PASSWORD ? process.env.PASSWORD : undefined;
 
+const COOKIE_STRING = process.env.PIXAI_COOKIE || "";
+
 const isDocker = true;
 const headless = true;
 
@@ -21,11 +23,28 @@ function delay(time) {
 	});
 }
 
-async function loginAndScrape(url, username, password, isDocker, headless) {
-	console.log("Username:", username);
+async function applyCookies(page) {
+	if (!COOKIE_STRING) return;
 
-	if (username == undefined || password == undefined) {
-		throw new Error("Please set username and password in environment variables");
+	const cookies = COOKIE_STRING.split(";").map(c => {
+		const [name, ...rest] = c.trim().split("=");
+		return {
+			name,
+			value: rest.join("="),
+			domain: ".pixai.art",
+			path: "/"
+		};
+	});
+
+	await page.setCookie(...cookies);
+	console.log("Cookies applied");
+}
+
+async function loginAndScrape(url, username, password, isDocker, headless) {
+	console.log("Starting");
+
+	if (!COOKIE_STRING && (username == undefined || password == undefined)) {
+		throw new Error("Set LOGINNAME/PASSWORD or PIXAI_COOKIE");
 	}
 
 	let config = {
@@ -69,7 +88,18 @@ async function loginAndScrape(url, username, password, isDocker, headless) {
 	});
 
 	try {
-		await page.goto(url);
+		// open base site first
+		await page.goto("https://pixai.art", { waitUntil: "domcontentloaded" });
+
+		// apply cookies
+		await applyCookies(page);
+
+		// reload so cookies take effect
+		await page.reload({ waitUntil: "domcontentloaded" });
+
+		// go to login page (or dashboard)
+		await page.goto(url, { waitUntil: "domcontentloaded" });
+
 	} catch (error) {
 		console.error("Failed to access URL:", error);
 		tryCount++;
@@ -85,18 +115,19 @@ async function loginAndScrape(url, username, password, isDocker, headless) {
 		await page.waitForSelector(
 			'div[id="root"] > div > div > div > div > div form > div > div button:last-of-type'
 		);
-		await delay(30);
 		await page.click(
 			'div[id="root"] > div > div > div > div > div form > div > div button:last-of-type'
 		);
 		await delay(3000);
-	} catch (error) {
-		console.error("Failed to dismiss initial popup:", error);
-	}
+	} catch {}
 
 	try {
-		console.log("Logging in");
-		await login(page, username, password);
+		if (!COOKIE_STRING) {
+			console.log("Logging in with credentials");
+			await login(page, username, password);
+		} else {
+			console.log("Using cookies, skipping login");
+		}
 	} catch (error) {
 		console.error("Login failed:", error);
 		tryCount++;
@@ -108,66 +139,22 @@ async function loginAndScrape(url, username, password, isDocker, headless) {
 	}
 
 	try {
-		console.log("Claiming daily reward (popup)");
+		console.log("Claiming reward");
 		await claimCreditFromPop(page);
 	} catch (error) {
 		console.error("Popup claim failed:", error);
-		tryCount++;
-		if (tryCount <= tryCountMax) {
-			console.log("Falling back to original method");
-			await originalScrape(url, username, password, isDocker, headless, page);
-		} else {
-			throw new Error("Popup claim failed");
-		}
+		await originalScrape(url, username, password, isDocker, headless, page);
 	}
 
 	await browser.close();
-}
-
-async function originalScrape(
-	url,
-	username,
-	password,
-	isDocker,
-	headless,
-	page
-) {
-	try {
-		console.log("Opening profile menu");
-		await selectProfileButton(page);
-	} catch (error) {
-		console.error("Failed opening profile menu:", error);
-		throw error;
-	}
-
-	try {
-		console.log("Opening profile");
-		await clickProfile(page);
-	} catch (error) {
-		console.error("Failed opening profile:", error);
-		throw error;
-	}
-
-	try {
-		console.log("Claiming daily reward");
-		await claimCredit(page);
-	} catch (error) {
-		console.error("Claim failed:", error);
-		throw error;
-	}
 }
 
 async function login(page, username, password) {
 	await page.type("#email-input", username);
 	await page.type("#password-input", password);
 	await delay(300);
-	await page.waitForSelector('button[type="submit"]');
 	await page.click('button[type="submit"]');
 	await delay(6000);
-	try {
-		await page.$eval('button[type="submit"]', (button) => button.click());
-		await delay(3000);
-	} catch {}
 }
 
 async function checkPopup(page) {
@@ -202,27 +189,17 @@ async function clickProfile(page) {
 	await page.waitForSelector(
 		"div[role='menu'] > a[role='menuitem']:nth-of-type(1)"
 	);
-	while (true) {
-		try {
-			await page.click("div[role='menu'] > a[role='menuitem']:nth-of-type(1)");
-			await delay(300);
-			break;
-		} catch (err) {
-			throw new Error(err);
-		}
-	}
+	await page.click("div[role='menu'] > a[role='menuitem']:nth-of-type(1)");
+	await delay(300);
 }
 
 async function claimCredit(page) {
 	await page.waitForSelector(
 		"section > div > div:nth-of-type(2) > div:nth-of-type(2) > button"
 	);
-	let isClaimed = false;
 
 	while (true) {
 		try {
-			if (isClaimed) break;
-
 			await page.click(
 				"section > div > div:nth-of-type(1) > div:nth-of-type(2) > button"
 			);
@@ -230,29 +207,19 @@ async function claimCredit(page) {
 			await page.reload();
 			await delay(5000);
 
-			const updatedClaimBtnText = await page.$eval(
+			const text = await page.$eval(
 				"section > div > div:nth-of-type(1) > div:nth-of-type(2) > button > span",
-				(el) => el.innerText
+				(el) => el.innerText.toLowerCase()
 			);
 
-			const text = updatedClaimBtnText.toLowerCase();
-
-			if (
-				text.includes("claimed") ||
-				text.includes("已認領") ||
-				text.includes("已认领") ||
-				text.includes("申請済み")
-			) {
+			if (text.includes("claimed")) {
 				console.log("Claim successful");
-				isClaimed = true;
+				break;
 			}
 		} catch {
 			if (!(await checkPopup(page))) {
-				await delay(500);
-				if (isClaimed) {
-					console.log("Already claimed");
-					break;
-				}
+				console.log("Already claimed");
+				break;
 			}
 		}
 	}
@@ -260,23 +227,17 @@ async function claimCredit(page) {
 
 async function claimCreditFromPop(page) {
 	await page.waitForSelector("section > div > div > button");
-	let isClaimed = false;
 
 	while (true) {
 		try {
-			if (isClaimed) break;
-
 			await page.click("section > div > div > button");
 			await delay(300);
 			await page.reload();
 			await delay(5000);
 		} catch {
 			if (!(await checkPopup(page))) {
-				await delay(500);
-				if (isClaimed) {
-					console.log("Already claimed");
-					break;
-				}
+				console.log("Already claimed");
+				break;
 			}
 		}
 	}
