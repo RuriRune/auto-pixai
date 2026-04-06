@@ -1,161 +1,35 @@
-name: Docker Image CI
+name: Build and Publish Docker Image
 
 on:
   push:
-    branches: ["release"]
-  # pull_request:
-  #   branches: ["main"]
+    branches: ["main", "release"] # This triggers the build when you push to main or release
 
 jobs:
-  cache-node-modules:
-    if: github.ref == 'refs/heads/release'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-
-      - name: Cache node modules
-        id: cache-node-modules
-        uses: actions/cache@v3
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      - if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
-        name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: "18.17.0"
-
-      - if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
-        name: List the state of node modules
-        continue-on-error: true
-        run: npm list
-
-      - if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
-        name: Install dependencies
-        run: npm install
-
-      - if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
-        name: show node version
-        run: node -v
-
-      - if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
-        name: show npm version
-        run: npm -v
-
-      # 上傳存儲項目
-      # - name: Upload node_modules
-      #   uses: actions/upload-artifact@v3
-      #   with:
-      #     name: node_modules
-      #     path: node_modules
-
-  check-tag:
-    runs-on: ubuntu-latest
-    outputs:
-      latest_tag: ${{ steps.latest_tag.outputs.tag }}
-      need_create: ${{ steps.latest_tag.outputs.need_create }}
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-
-      - name: Show tags
-        id: latest_tag
-        run: |
-          package_version=$(node -e "console.log(require('./package.json').version)")
-          git fetch --tags
-          github_tag=$(git describe --tags $(git rev-list --tags --max-count=1))
-
-          if [ "$package_version" != "$github_tag" ]; then
-            echo "need_create=true" >> "$GITHUB_OUTPUT"
-            latest_tag=$package_version
-            echo "❌ Package.json version does not match github tag"
-          else
-            echo "need_create=false" >> "$GITHUB_OUTPUT"
-            latest_tag=$github_tag
-            echo "✅ Package.json version matches github tag: $latest_tag"
-          fi
-          echo "💡 Latest tag: $latest_tag"
-          echo "tag=$latest_tag" >> "$GITHUB_OUTPUT"
-
-  create-tag:
+  build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
-    needs: [check-tag]
+      contents: read
+      packages: write # This allows GitHub to save the image to your profile
+
     steps:
-      - name: Check out repository code
+      - name: Checkout Code
         uses: actions/checkout@v4
-      - name: check value
-        run: |
-          echo "need_create "${{ needs.check-tag.outputs.need_create }}
-          echo "latest_tag1 "${{ needs.check-tag.outputs.latest_tag }}
-      - name: push tag
-        if: needs.check-tag.outputs.need_create == 'true'
-        env:
-          latest_tag: ${{ needs.check-tag.outputs.latest_tag }}
-        run: |
-          # 設置身份
-          git config user.email "lion31lion31@gmail.com"
-          git config user.name "Github Actions"
-
-          # 建立新標籤並推送到 GitHub
-          git tag -a "$latest_tag" -m "Release $latest_tag"
-          git push origin "$latest_tag"
-
-  docker-build:
-    if: github.ref == 'refs/heads/release'
-    runs-on: ubuntu-latest
-    needs: [cache-node-modules, check-tag, create-tag]
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-
-      # 載入存儲項目
-      # - name: Download node_modules
-      #   uses: actions/download-artifact@v3
-      #   with:
-      #     name: node_modules
-      #     path: node_modules
-
-      # 載入緩存
-      - name: Cache node modules
-        id: cache-node-modules
-        uses: actions/cache@v3
-        env:
-          cache-name: cache-node-modules
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push tag
+      - name: Build and Push Image
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ./Dockerfile
           push: true
-          tags: smile0301/auto-pixai:${{ needs.check-tag.outputs.latest_tag }}
-
-      - name: Build and push latest
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: smile0301/auto-pixai:latest
+          # This automatically tags it as ghcr.io/markld95/auto-pixai:latest
+          tags: ghcr.io/${{ github.repository }}:latest
