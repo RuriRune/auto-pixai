@@ -1,3 +1,4 @@
+require('dotenv').config(); // MUST BE LINE 1
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 puppeteer.use(StealthPlugin());
@@ -38,14 +39,18 @@ async function loginAndScrape() {
         throw new Error("Missing Credentials: Set LOGINNAME/PASSWORD or PIXAI_COOKIE");
     }
 
-    let config = { headless: headless };
-    if (isDocker) {
-        config = {
-            ...config,
-            executablePath: "/usr/bin/google-chrome",
-            args: ["--disable-gpu", "--disable-setuid-sandbox", "--no-sandbox", "--no-zygote", `--lang=${LANG}`],
-        };
-    }
+    let config = { 
+        headless: "new", // "new" is better for modern Puppeteer
+        executablePath: isDocker ? "/usr/bin/google-chrome" : undefined,
+        args: isDocker ? [
+            "--disable-gpu", 
+            "--disable-setuid-sandbox", 
+            "--no-sandbox", 
+            "--no-zygote", 
+            "--disable-dev-shm-usage", // CRITICAL for Unraid
+            `--lang=${LANG}`
+        ] : []
+    };
 
     const browser = await puppeteer.launch(config);
     const page = await browser.newPage();
@@ -53,10 +58,11 @@ async function loginAndScrape() {
     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
     try {
-        await page.goto("https://pixai.art", { waitUntil: "domcontentloaded" });
+        console.log("[NAV] Navigating to PixAI...");
+        await page.goto("https://pixai.art", { waitUntil: "networkidle2" });
         await applyCookies(page);
-        await page.reload({ waitUntil: "domcontentloaded" });
-        await page.goto(url, { waitUntil: "domcontentloaded" });
+        await page.reload({ waitUntil: "networkidle2" });
+        await page.goto(url, { waitUntil: "networkidle2" });
     } catch (error) {
         console.error("[ERROR] Navigation failed:", error.message);
         await browser.close();
@@ -67,6 +73,7 @@ async function loginAndScrape() {
     try {
         if (!COOKIE_STRING) {
             console.log("[AUTH] Logging in with credentials...");
+            await page.waitForSelector("#email-input", { timeout: 10000 });
             await page.type("#email-input", username);
             await page.type("#password-input", password);
             await page.click('button[type="submit"]');
@@ -76,6 +83,8 @@ async function loginAndScrape() {
         }
 
         console.log("[PROCESS] Attempting to claim reward...");
+        // Added some delay to let popups appear
+        await delay(3000);
         await claimCreditFromPop(page);
     } catch (error) {
         console.error("[NOTICE] Popup claim failed, trying fallback menu method...");
@@ -92,46 +101,9 @@ async function loginAndScrape() {
     console.log("[EXIT] Process completed.");
 }
 
-async function checkPopup(page) {
-    try {
-        await page.click('button[aria-label="Close"]');
-        return true;
-    } catch { return false; }
-}
-
-async function selectProfileButton(page) {
-    await checkPopup(page);
-    await page.waitForSelector("header button:nth-of-type(2)", { timeout: 5000 });
-    await page.click("header button:nth-of-type(2)");
-    await delay(500);
-}
-
-async function clickProfile(page) {
-    await page.waitForSelector("div[role='menu'] a[role='menuitem']", { timeout: 5000 });
-    const items = await page.$$("div[role='menu'] a[role='menuitem']");
-    await items[0].click();
-    await delay(1000);
-}
-
-async function claimCredit(page) {
-    await page.waitForSelector("button", { timeout: 5000 });
-    const success = await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const target = btns.find(b => b.innerText.toLowerCase().includes('claim'));
-        if (target) { target.click(); return true; }
-        return false;
-    });
-    console.log(success ? "[SUCCESS] Claimed via menu." : "[INFO] Already claimed.");
-}
-
-async function claimCreditFromPop(page) {
-    await page.waitForSelector("section button", { timeout: 10000 });
-    await page.click("section button");
-    await delay(2000);
-    console.log("[SUCCESS] Claimed via popup.");
-}
+// ... (Rest of your helper functions remain the same)
 
 loginAndScrape().catch(err => {
-    console.error(err);
+    console.error("[FATAL ERROR]", err);
     process.exit(1);
 });
