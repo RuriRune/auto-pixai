@@ -14,6 +14,15 @@ const shotPath = "/data/";
 
 function delay(time) { return new Promise((resolve) => setTimeout(resolve, time)); }
 
+// Function to unlock files for Unraid
+function unlockFile(path) {
+    try {
+        if (fs.existsSync(path)) {
+            fs.chmodSync(path, 0o777);
+        }
+    } catch (e) { console.warn(`[WARN] Could not set permissions on ${path}`); }
+}
+
 async function applyCookies(page, cookiesArray) {
     for (const cookie of cookiesArray) {
         try {
@@ -25,7 +34,7 @@ async function applyCookies(page, cookiesArray) {
                 secure: true,
                 sameSite: 'Lax'
             });
-        } catch (e) { /* Skip */ }
+        } catch (e) { }
     }
 }
 
@@ -49,7 +58,7 @@ async function parseLocalCookies(cookieStr) {
 }
 
 async function run() {
-    console.log(`[INFO] Starting PixAI Auto-Claimer (Position-Injection Mode)`);
+    console.log(`[INFO] Starting PixAI Auto-Claimer (Permissions & Position-Injection)`);
     const browser = await puppeteer.launch({ 
         headless: "new",
         executablePath: isDocker ? "/usr/bin/google-chrome" : undefined,
@@ -69,9 +78,10 @@ async function run() {
         await page.goto(url, { waitUntil: "networkidle2" });
         await delay(12000); 
 
-        await page.screenshot({ path: `${shotPath}1_before_claim.png`, fullPage: true });
+        const beforeFile = `${shotPath}1_before_claim.png`;
+        await page.screenshot({ path: beforeFile, fullPage: true });
+        unlockFile(beforeFile); // Unlock it immediately
 
-        // --- NEW STRATEGY: Use JS to find the Iframe position ---
         console.log("[PROCESS] Locating Turnstile position via JS injection...");
         const rect = await page.evaluate(() => {
             const iframe = Array.from(document.querySelectorAll('iframe')).find(f => 
@@ -79,24 +89,21 @@ async function run() {
             );
             if (!iframe) return null;
             const box = iframe.getBoundingClientRect();
+            // Check if it's actually visible
+            if (box.width === 0 || box.height === 0) return null;
             return { x: box.left, y: box.top, width: box.width, height: box.height };
         });
 
-        if (rect && rect.width > 0) {
+        if (rect) {
             console.log(`[AUTH] Target found at (${rect.x}, ${rect.y}). Clicking...`);
-            
-            // The checkbox is about 30px from the left of the iframe
             const clickX = rect.x + 30;
             const clickY = rect.y + (rect.height / 2);
-            
-            await page.mouse.click(clickX, clickY, { delay: 200 });
-            console.log("[AUTH] Click dispatched. Waiting 8s...");
+            await page.mouse.click(clickX, clickY, { delay: 250 });
             await delay(8000); 
         } else {
-            console.log("[WARN] Could not find iframe via JS or it has 0 size.");
+            console.log("[WARN] Cloudflare iframe not found or hidden.");
         }
 
-        // 4. Click the "Claim" Button
         console.log("[PROCESS] Finalizing Claim...");
         const claimResult = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
@@ -109,9 +116,11 @@ async function run() {
         });
 
         console.log(`[PROCESS] Button Status: ${claimResult}`);
-        if (claimResult === "CLICKED") await delay(4000);
+        if (claimResult === "CLICKED") await delay(5000);
 
-        await page.screenshot({ path: `${shotPath}2_after_claim.png`, fullPage: true });
+        const afterFile = `${shotPath}2_after_claim.png`;
+        await page.screenshot({ path: afterFile, fullPage: true });
+        unlockFile(afterFile); // Unlock it immediately
 
     } catch (e) { 
         console.error("[FATAL ERROR]", e.message); 
