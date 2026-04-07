@@ -10,8 +10,6 @@ const COOKIE_STRING = process.env.PIXAI_COOKIE || "";
 const FS_URL = process.env.FLARESOLVERR_URL || "";
 const isDocker = process.env.IS_DOCKER !== 'false';
 const LANG = process.env.APP_LANG || "en-GB";
-
-// Mapped to /mnt/user/appdata/auto-pixai in Unraid
 const shotPath = "/data/"; 
 
 function delay(time) { return new Promise((resolve) => setTimeout(resolve, time)); }
@@ -27,7 +25,7 @@ async function applyCookies(page, cookiesArray) {
                 secure: true,
                 sameSite: 'Lax'
             });
-        } catch (e) { /* Skip malformed */ }
+        } catch (e) { /* Skip */ }
     }
 }
 
@@ -51,7 +49,7 @@ async function parseLocalCookies(cookieStr) {
 }
 
 async function run() {
-    console.log(`[INFO] Starting PixAI Auto-Claimer (Frame-Detection Mode)`);
+    console.log(`[INFO] Starting PixAI Auto-Claimer (Position-Injection Mode)`);
     const browser = await puppeteer.launch({ 
         headless: "new",
         executablePath: isDocker ? "/usr/bin/google-chrome" : undefined,
@@ -60,74 +58,59 @@ async function run() {
     
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 1024 });
-    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-    await page.setUserAgent(UA);
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
 
     try {
         await page.goto("https://pixai.art", { waitUntil: "networkidle2" });
         const localCookies = await parseLocalCookies(COOKIE_STRING);
         await applyCookies(page, localCookies);
-        console.log(`[AUTH] Injected ${localCookies.length} user cookies.`);
 
         console.log("[NAV] Navigating to Generator...");
         await page.goto(url, { waitUntil: "networkidle2" });
-        
-        // Wait for the popup and Turnstile to be fully ready
         await delay(12000); 
 
-        // BEFORE SCREENSHOT
         await page.screenshot({ path: `${shotPath}1_before_claim.png`, fullPage: true });
 
-        // --- NEW STRATEGY: Find frame by URL (Invisible to normal selectors) ---
-        console.log("[PROCESS] Scanning all active frames for Cloudflare...");
-        const allFrames = page.frames();
-        const cfFrame = allFrames.find(f => f.url().includes('cloudflare.com') || f.url().includes('turnstile'));
+        // --- NEW STRATEGY: Use JS to find the Iframe position ---
+        console.log("[PROCESS] Locating Turnstile position via JS injection...");
+        const rect = await page.evaluate(() => {
+            const iframe = Array.from(document.querySelectorAll('iframe')).find(f => 
+                f.src.includes('cloudflare.com') || f.src.includes('turnstile')
+            );
+            if (!iframe) return null;
+            const box = iframe.getBoundingClientRect();
+            return { x: box.left, y: box.top, width: box.width, height: box.height };
+        });
 
-        if (cfFrame) {
-            console.log("[AUTH] Cloudflare frame found via frame list. Targeting coordinates...");
+        if (rect && rect.width > 0) {
+            console.log(`[AUTH] Target found at (${rect.x}, ${rect.y}). Clicking...`);
             
-            // Get the physical position of the frame on the screen
-            const frameElement = await cfFrame.frameElement();
-            const rect = await frameElement.boundingBox();
-
-            if (rect) {
-                // Click the left side where the box sits
-                const clickX = rect.x + 40; 
-                const clickY = rect.y + (rect.height / 2);
-                
-                console.log(`[AUTH] Dispatching physical click to: ${clickX}, ${clickY}`);
-                await page.mouse.click(clickX, clickY, { delay: 200 });
-                
-                console.log("[AUTH] Clicked. Waiting 8s for verification to clear...");
-                await delay(8000); 
-            }
+            // The checkbox is about 30px from the left of the iframe
+            const clickX = rect.x + 30;
+            const clickY = rect.y + (rect.height / 2);
+            
+            await page.mouse.click(clickX, clickY, { delay: 200 });
+            console.log("[AUTH] Click dispatched. Waiting 8s...");
+            await delay(8000); 
         } else {
-            console.log("[WARN] Still cannot detect frame. Cloudflare might be using a randomized URL.");
+            console.log("[WARN] Could not find iframe via JS or it has 0 size.");
         }
 
         // 4. Click the "Claim" Button
-        console.log("[PROCESS] Attempting to click the Claim button...");
+        console.log("[PROCESS] Finalizing Claim...");
         const claimResult = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
             const claimBtn = btns.find(b => b.innerText.includes('12,000'));
-            
-            if (claimBtn) {
-                if (!claimBtn.disabled) {
-                    claimBtn.click();
-                    return "CLICKED";
-                }
-                return "FOUND_BUT_DISABLED";
+            if (claimBtn && !claimBtn.disabled) {
+                claimBtn.click();
+                return "CLICKED";
             }
-            return "NOT_FOUND";
+            return claimBtn ? "DISABLED" : "NOT_FOUND";
         });
 
         console.log(`[PROCESS] Button Status: ${claimResult}`);
-        if (claimResult === "CLICKED") {
-            await delay(4000);
-            console.log("[SUCCESS] Daily Claim process completed.");
-        }
+        if (claimResult === "CLICKED") await delay(4000);
 
-        // AFTER SCREENSHOT
         await page.screenshot({ path: `${shotPath}2_after_claim.png`, fullPage: true });
 
     } catch (e) { 
