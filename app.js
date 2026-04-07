@@ -4,7 +4,7 @@ const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const fs = require('fs');
 puppeteer.use(StealthPlugin());
 
-const url = "https://pixai.art";
+const url = "https://pixai.art/en/generator/image";
 const COOKIE_STRING = process.env.PIXAI_COOKIE || "";
 const isDocker = process.env.IS_DOCKER !== 'false';
 const LANG = process.env.APP_LANG || "en-GB";
@@ -18,39 +18,63 @@ function delay(time) {
     return new Promise((resolve) => setTimeout(resolve, time));
 }
 
+/**
+ * Advanced Cookie Parser: Handles Netscape format, JSON, or standard strings
+ */
 async function applyCookies(page) {
     if (!COOKIE_STRING) {
         console.error("[ERROR] No PIXAI_COOKIE found.");
         return;
     }
-    
-    const cookieArray = COOKIE_STRING.split(';').filter(c => c.trim().length > 0);
-    
-    for (const cookie of cookieArray) {
-        const parts = cookie.trim().split('=');
-        if (parts.length < 2) continue;
-        
-        const name = parts[0].trim();
-        const value = parts.slice(1).join('=').trim();
 
-        const cookieParams = {
-            name: name,
-            value: value,
-            path: '/',
-            secure: true,
-            sameSite: 'Lax'
-        };
+    const lines = COOKIE_STRING.split('\n');
+    let count = 0;
 
-        // Set for both potential domains to ensure the session 'sticks'
-        await page.setCookie({ ...cookieParams, domain: '.pixai.art' });
-        await page.setCookie({ ...cookieParams, domain: 'pixai.art' });
+    for (let line of lines) {
+        line = line.trim();
+        if (!line || line.startsWith('#')) continue;
+
+        // Handle Netscape/Tab format (7 columns)
+        const tabs = line.split('\t');
+        if (tabs.length >= 7) {
+            const [domain, flag, path, secure, expires, name, value] = tabs;
+            await page.setCookie({
+                name: name.trim(),
+                value: value.trim(),
+                domain: domain.startsWith('.') ? domain : `.${domain}`,
+                path: path,
+                secure: secure.toUpperCase() === 'TRUE',
+                httpOnly: false, // Netscape doesn't track this, but usually safe as false
+                sameSite: 'Lax'
+            });
+            count++;
+        } 
+        // Handle standard semicolon format (name=value; name2=value2)
+        else if (line.includes('=')) {
+            const pairs = line.split(';');
+            for (const pair of pairs) {
+                const [name, ...valParts] = pair.trim().split('=');
+                if (!name || valParts.length === 0) continue;
+                const value = valParts.join('=');
+                
+                const cookieParams = {
+                    name: name.trim(),
+                    value: value.trim(),
+                    path: '/',
+                    secure: true,
+                    sameSite: 'Lax'
+                };
+                await page.setCookie({ ...cookieParams, domain: '.pixai.art' });
+                await page.setCookie({ ...cookieParams, domain: 'pixai.art' });
+                count++;
+            }
+        }
     }
-    
-    console.log(`[AUTH] Injected ${cookieArray.length} cookies into session.`);
+    console.log(`[AUTH] Parsed and applied ${count} cookie parameters.`);
 }
 
 async function run() {
-    console.log("[INFO] Starting PixAI Auto-Claimer (Session-Fix Mode)...");
+    console.log("[INFO] Starting PixAI Auto-Claimer (Cookie-Engine V3)...");
 
     const config = { 
         headless: "new",
@@ -63,21 +87,23 @@ async function run() {
 
     const browser = await puppeteer.launch(config);
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+    await page.setViewport({ width: 1280, height: 1024 }); // Slightly taller for popups
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
 
     try {
-        // Initial load to set the domain context
-        console.log("[NAV] Initializing domain...");
+        // 1. Visit domain once to initialize
+        console.log("[NAV] Initializing...");
+        await page.goto("https://pixai.art", { waitUntil: "networkidle2" });
+        
+        // 2. Apply complex cookies
+        await applyCookies(page);
+        
+        // 3. Navigate to the specific generator page
+        console.log("[NAV] Navigating to Generator with Session...");
         await page.goto(url, { waitUntil: "networkidle2" });
         
-        // Apply cookies and reload to activate session
-        await applyCookies(page);
-        console.log("[NAV] Reloading with active session...");
-        await page.reload({ waitUntil: "networkidle2" });
-        
-        // Extra 5s wait to let the UI update from "Sign in" to "Profile"
-        await delay(5000);
+        // 4. Wait for session check
+        await delay(6000);
 
         let claimed = false;
         const maxAttempts = 15; 
@@ -85,7 +111,7 @@ async function run() {
         for (let i = 0; i < maxAttempts; i++) {
             console.log(`[PROCESS] Scan attempt ${i + 1}/${maxAttempts}...`);
             
-            const targetFound = await page.evaluate(() => {
+            const result = await page.evaluate(() => {
                 const keywords = ['claim', 'get', 'collect', 'check-in', 'receive'];
                 const elements = Array.from(document.querySelectorAll('button, div[role="button"], span, a'));
                 
@@ -107,10 +133,10 @@ async function run() {
                 return false;
             });
 
-            if (targetFound && targetFound.success) {
-                console.log(`[SUCCESS] Found and clicked: "${targetFound.text}"`);
+            if (result && result.success) {
+                console.log(`[SUCCESS] Found and clicked: "${result.text}"`);
                 claimed = true;
-                await delay(5000); // Wait for the "Claimed" animation to finish
+                await delay(5000); 
                 break;
             }
 
@@ -118,7 +144,7 @@ async function run() {
         }
 
         if (!claimed) {
-            console.log("[CRITICAL] Claim button not found. Check if logged in in screenshot.");
+            console.log("[CRITICAL] Claim button not found. Verify login state in screenshot.");
         }
 
     } catch (error) {
@@ -126,7 +152,7 @@ async function run() {
     } finally {
         if (isDocker) {
             await page.screenshot({ path: `${shotDir}/last_run_state.png`, fullPage: true });
-            console.log("[DEBUG] Final screenshot saved to verify login state.");
+            console.log("[DEBUG] State saved to /screenshots/last_run_state.png");
         }
         await browser.close();
         console.log("[EXIT] Process completed.");
