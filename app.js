@@ -48,7 +48,7 @@ async function parseLocalCookies(cookieStr) {
 }
 
 async function run() {
-    console.log(`[INFO] Starting PixAI Auto-Claimer (Shadow-Piercing Mode)`);
+    console.log(`[INFO] Starting PixAI Auto-Claimer (True-Center Mode)`);
     const browser = await puppeteer.launch({ 
         headless: "new",
         executablePath: isDocker ? "/usr/bin/google-chrome" : undefined,
@@ -66,44 +66,30 @@ async function run() {
 
         console.log("[NAV] Navigating to Generator...");
         await page.goto(url, { waitUntil: "networkidle2" });
-        await delay(12000); 
+        await delay(15000); // 15s to be absolutely sure popup is stable
 
         await page.screenshot({ path: `${shotPath}1_before_claim.png`, fullPage: true });
 
-        console.log("[PROCESS] Piercing Shadow DOM to find Turnstile...");
-        const rect = await page.evaluate(() => {
-            function findInShadow(root, selector) {
-                const el = root.querySelector(selector);
-                if (el) return el;
-                const children = root.querySelectorAll('*');
-                for (const child of children) {
-                    if (child.shadowRoot) {
-                        const found = findInShadow(child.shadowRoot, selector);
-                        if (found) return found;
-                    }
-                }
-                return null;
-            }
-            const iframe = findInShadow(document, 'iframe[src*="cloudflare"], iframe[src*="turnstile"]');
-            if (!iframe) return null;
-            const box = iframe.getBoundingClientRect();
-            return { x: box.left, y: box.top, width: box.width, height: box.height };
-        });
+        console.log("[PROCESS] Attempting precision coordinate cluster click...");
+        
+        // Coordinates for 1280x1024 viewport based on UI center
+        // The Cloudflare box in your screenshot is roughly middle-left of the modal
+        const targets = [
+            {x: 400, y: 700}, 
+            {x: 395, y: 705},
+            {x: 405, y: 695}
+        ];
 
-        if (rect && rect.width > 0) {
-            console.log(`[AUTH] Target found at (${Math.round(rect.x)}, ${Math.round(rect.y)}). Clicking...`);
-            const clickX = Math.round(rect.x + 35);
-            const clickY = Math.round(rect.y + (rect.height / 2));
-            await page.mouse.click(clickX, clickY, { delay: 250 });
-            await delay(8000); 
-        } else {
-            console.log("[WARN] Turnstile not found. Trying coordinate-blind fallback...");
-            // Coordinate fallback based on your screenshots (1280x1024 viewport)
-            await page.mouse.click(470, 705, { delay: 250 });
-            await delay(8000);
+        for (const t of targets) {
+            console.log(`[AUTH] Clicking cluster point: ${t.x}, ${t.y}`);
+            await page.mouse.click(t.x, t.y, { delay: 150 });
+            await delay(500);
         }
 
-        console.log("[PROCESS] Checking Claim button status...");
+        console.log("[WAIT] Cluster complete. Waiting 10s for verification...");
+        await delay(10000); 
+
+        console.log("[PROCESS] Finalizing Claim...");
         const claimResult = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
             const claimBtn = btns.find(b => b.innerText.includes('12,000'));
@@ -117,7 +103,7 @@ async function run() {
         console.log(`[PROCESS] Button Status: ${claimResult}`);
         if (claimResult === "CLICKED") {
             console.log("[SUCCESS] Credits claimed!");
-            await delay(4000);
+            await delay(5000);
         }
 
         await page.screenshot({ path: `${shotPath}2_after_claim.png`, fullPage: true });
