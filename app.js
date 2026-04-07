@@ -10,6 +10,8 @@ const COOKIE_STRING = process.env.PIXAI_COOKIE || "";
 const FS_URL = process.env.FLARESOLVERR_URL || "";
 const isDocker = process.env.IS_DOCKER !== 'false';
 const LANG = process.env.APP_LANG || "en-GB";
+
+// Mapped to /mnt/user/appdata/auto-pixai in Unraid
 const shotPath = "/data/"; 
 
 function delay(time) { return new Promise((resolve) => setTimeout(resolve, time)); }
@@ -65,47 +67,48 @@ async function run() {
         await page.goto("https://pixai.art", { waitUntil: "networkidle2" });
         const localCookies = await parseLocalCookies(COOKIE_STRING);
         await applyCookies(page, localCookies);
+        console.log(`[AUTH] Injected ${localCookies.length} user cookies.`);
 
         console.log("[NAV] Navigating to Generator...");
         await page.goto(url, { waitUntil: "networkidle2" });
         
-        // Wait for the popup to be fully settled
+        // Wait for the popup and Turnstile to be fully ready
         await delay(12000); 
 
-        // BEFORE SCREENSHOT (Proof it's there)
+        // BEFORE SCREENSHOT
         await page.screenshot({ path: `${shotPath}1_before_claim.png`, fullPage: true });
 
-        // --- NEW STRATEGY: Find frame by URL instead of Selector ---
-        console.log("[PROCESS] Scanning for Cloudflare frame via URL...");
+        // --- NEW STRATEGY: Find frame by URL (Invisible to normal selectors) ---
+        console.log("[PROCESS] Scanning all active frames for Cloudflare...");
         const allFrames = page.frames();
-        const cfFrame = allFrames.find(f => f.url().includes('cloudflare.com') && f.url().includes('turnstile'));
+        const cfFrame = allFrames.find(f => f.url().includes('cloudflare.com') || f.url().includes('turnstile'));
 
         if (cfFrame) {
-            console.log("[AUTH] Cloudflare frame found via URL. Targeting coordinates...");
+            console.log("[AUTH] Cloudflare frame found via frame list. Targeting coordinates...");
             
-            // Get the frame's container element to find where it is on the screen
+            // Get the physical position of the frame on the screen
             const frameElement = await cfFrame.frameElement();
             const rect = await frameElement.boundingBox();
 
             if (rect) {
-                // Click the left side of the widget where the checkbox is
+                // Click the left side where the box sits
                 const clickX = rect.x + 40; 
                 const clickY = rect.y + (rect.height / 2);
                 
                 console.log(`[AUTH] Dispatching physical click to: ${clickX}, ${clickY}`);
                 await page.mouse.click(clickX, clickY, { delay: 200 });
                 
-                await delay(8000); // Wait for the "Claim" button to turn purple
+                console.log("[AUTH] Clicked. Waiting 8s for verification to clear...");
+                await delay(8000); 
             }
         } else {
-            console.log("[WARN] Could not detect Cloudflare frame by URL. Checking Fallback...");
+            console.log("[WARN] Still cannot detect frame. Cloudflare might be using a randomized URL.");
         }
 
         // 4. Click the "Claim" Button
         console.log("[PROCESS] Attempting to click the Claim button...");
         const claimResult = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
-            // Filter specifically for the daily claim button
             const claimBtn = btns.find(b => b.innerText.includes('12,000'));
             
             if (claimBtn) {
@@ -119,7 +122,10 @@ async function run() {
         });
 
         console.log(`[PROCESS] Button Status: ${claimResult}`);
-        if (claimResult === "CLICKED") await delay(4000);
+        if (claimResult === "CLICKED") {
+            await delay(4000);
+            console.log("[SUCCESS] Daily Claim process completed.");
+        }
 
         // AFTER SCREENSHOT
         await page.screenshot({ path: `${shotPath}2_after_claim.png`, fullPage: true });
