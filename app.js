@@ -9,9 +9,10 @@ const COOKIE_STRING = process.env.PIXAI_COOKIE || "";
 const isDocker = process.env.IS_DOCKER !== 'false';
 const LANG = process.env.APP_LANG || "en-GB";
 
-// Ensure screenshot directory exists in Docker
-if (isDocker && !fs.existsSync('/screenshots')) {
-    fs.mkdirSync('/screenshots', { recursive: true });
+// Ensure screenshot directory exists
+const shotDir = '/screenshots';
+if (isDocker && !fs.existsSync(shotDir)) {
+    fs.mkdirSync(shotDir, { recursive: true });
 }
 
 function delay(time) {
@@ -37,7 +38,7 @@ async function applyCookies(page) {
 }
 
 async function run() {
-    console.log("[INFO] Starting PixAI Auto-Claimer (Resilient Mode)...");
+    console.log("[INFO] Starting PixAI Auto-Claimer (Precision Mode)...");
 
     const config = { 
         headless: "new",
@@ -50,8 +51,6 @@ async function run() {
 
     const browser = await puppeteer.launch(config);
     const page = await browser.newPage();
-    
-    // Set a realistic Window size to help popups render correctly
     await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
 
@@ -61,53 +60,60 @@ async function run() {
         
         await applyCookies(page);
         await page.reload({ waitUntil: "networkidle2" });
-        console.log("[AUTH] Session active. Waiting for popup to clear Cloudflare...");
+        console.log("[AUTH] Session active. Waiting for Cloudflare/Popup...");
 
         let claimed = false;
-        const maxAttempts = 15; // 15 attempts * 2 seconds = 30 seconds total wait
+        const maxAttempts = 15; 
 
         for (let i = 0; i < maxAttempts; i++) {
             console.log(`[PROCESS] Scan attempt ${i + 1}/${maxAttempts}...`);
             
-            claimed = await page.evaluate(() => {
+            // Check for the "Claim" button
+            const targetFound = await page.evaluate(() => {
                 const keywords = ['claim', 'get', 'collect', 'check-in', 'receive'];
-                // Search for buttons or any clickable div containing keywords
-                const elements = Array.from(document.querySelectorAll('button, div[role="button"], span'));
+                const elements = Array.from(document.querySelectorAll('button, div[role="button"], span, a'));
                 
-                const target = elements.find(el => {
+                const btn = elements.find(el => {
                     const text = el.innerText.toLowerCase();
                     const isVisible = el.offsetWidth > 0 && el.offsetHeight > 0;
-                    // Ensure the text contains a keyword and actually looks like a button
-                    return keywords.some(k => text.includes(k)) && isVisible;
+                    
+                    const hasKeyword = keywords.some(k => text.includes(k));
+                    const isNotInvite = !text.includes('invite') && !text.includes('rebate');
+                    const hasNumbers = /\d/.test(text); // Looks for "10,000" or similar
+
+                    return hasKeyword && isVisible && isNotInvite && hasNumbers;
                 });
 
-                if (target) {
-                    target.click();
-                    return true;
+                if (btn) {
+                    btn.scrollIntoView();
+                    btn.click();
+                    return { success: true, text: btn.innerText.trim() };
                 }
-                return false;
+                return { success: false };
             });
 
-            if (claimed) {
-                console.log("[SUCCESS] Claim button found and clicked!");
-                await delay(3000); // Wait for the click to process
+            if (targetFound.success) {
+                console.log(`[SUCCESS] Found and clicked: "${targetFound.text}"`);
+                claimed = true;
+                await delay(3000); // Wait for click to register
                 break;
             }
 
-            await delay(2000); // Wait 2 seconds before next scan
+            await delay(2000); 
         }
 
         if (!claimed) {
-            console.log("[CRITICAL] Claim button not found after 30s. Saving debug screenshot...");
-            if (isDocker) {
-                await page.screenshot({ path: '/screenshots/failure.png', fullPage: true });
-                console.log("[DEBUG] Screenshot saved to /screenshots/failure.png");
-            }
+            console.log("[CRITICAL] Claim button not found after 30s.");
         }
 
     } catch (error) {
         console.error("[FATAL ERROR]", error.message);
     } finally {
+        // ALWAYS save the final state so you can see if the button changed to "Claimed"
+        if (isDocker) {
+            await page.screenshot({ path: `${shotDir}/last_run_state.png`, fullPage: true });
+            console.log("[DEBUG] Final screenshot saved (overwriting last run).");
+        }
         await browser.close();
         console.log("[EXIT] Process completed.");
     }
