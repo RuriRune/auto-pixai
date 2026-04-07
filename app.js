@@ -48,7 +48,7 @@ async function parseLocalCookies(cookieStr) {
 }
 
 async function run() {
-    console.log(`[INFO] Starting PixAI Auto-Claimer (True-Center Mode)`);
+    console.log(`[INFO] Starting PixAI Auto-Claimer (Modal-Center Mode)`);
     const browser = await puppeteer.launch({ 
         headless: "new",
         executablePath: isDocker ? "/usr/bin/google-chrome" : undefined,
@@ -66,43 +66,44 @@ async function run() {
 
         console.log("[NAV] Navigating to Generator...");
         await page.goto(url, { waitUntil: "networkidle2" });
-        await delay(15000); // 15s to be absolutely sure popup is stable
+        await delay(15000); 
 
         await page.screenshot({ path: `${shotPath}1_before_claim.png`, fullPage: true });
 
-        console.log("[PROCESS] Attempting precision coordinate cluster click...");
+        console.log("[PROCESS] Dispatching recalibrated click to Turnstile...");
         
-        // Coordinates for 1280x1024 viewport based on UI center
-        // The Cloudflare box in your screenshot is roughly middle-left of the modal
-        const targets = [
-            {x: 400, y: 700}, 
-            {x: 395, y: 705},
-            {x: 405, y: 695}
-        ];
+        // Recalibrated for 1280x1024. 
+        // The modal is roughly 400px wide, centered. 
+        // The checkbox is on the left-ish side of the modal.
+        const targetX = 485; 
+        const targetY = 702;
 
-        for (const t of targets) {
-            console.log(`[AUTH] Clicking cluster point: ${t.x}, ${t.y}`);
-            await page.mouse.click(t.x, t.y, { delay: 150 });
-            await delay(500);
-        }
+        await page.mouse.move(targetX, targetY);
+        await delay(200);
+        await page.mouse.down();
+        await delay(150);
+        await page.mouse.up();
 
-        console.log("[WAIT] Cluster complete. Waiting 10s for verification...");
-        await delay(10000); 
+        console.log(`[AUTH] Clicked at ${targetX}, ${targetY}. Waiting for verification...`);
+        await delay(12000); 
 
-        console.log("[PROCESS] Finalizing Claim...");
+        console.log("[PROCESS] Checking Claim button status...");
         const claimResult = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
             const claimBtn = btns.find(b => b.innerText.includes('12,000'));
-            if (claimBtn && !claimBtn.disabled) {
-                claimBtn.click();
-                return "CLICKED";
+            if (claimBtn) {
+                if (!claimBtn.disabled) {
+                    claimBtn.click();
+                    return "CLICKED";
+                }
+                return "STILL_DISABLED";
             }
-            return claimBtn ? "STILL_DISABLED" : "NOT_FOUND";
+            return "NOT_FOUND";
         });
 
         console.log(`[PROCESS] Button Status: ${claimResult}`);
         if (claimResult === "CLICKED") {
-            console.log("[SUCCESS] Credits claimed!");
+            console.log("[SUCCESS] Credits claimed successfully!");
             await delay(5000);
         }
 
