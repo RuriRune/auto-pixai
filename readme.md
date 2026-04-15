@@ -64,7 +64,7 @@ Ensure your volume path points to the folder containing `cookies.json`.
 ```yaml
 services:
   pixai-claimer:
-    image: ghcr.io/RuriRune/auto-pixai:latest
+    image: ghcr.io/rurirune/auto-pixai:latest
     container_name: auto-pixai
     volumes:
       - /path/to/your-local-folder:/data
