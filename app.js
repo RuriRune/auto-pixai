@@ -30,59 +30,65 @@ async function applyCookies(page, cookiesArray) {
 }
 
 async function parseLocalCookies(cookieStr) {
-    if (!cookieStr || cookieStr.length < 10) return [];
+    if (!cookieStr || cookieStr.length < 20) return [];
     let decoded = cookieStr;
     if (!cookieStr.includes('\t') && !cookieStr.includes('=')) {
         try {
-            decoded = Buffer.from(cookieStr, 'base64').toString('utf-8');
-        } catch (e) {
-            return [];
-        }
+            decoded = Buffer.from(cookieStr.trim(), 'base64').toString('utf-8');
+        } catch (e) { return []; }
     }
-    const lines = decoded.split('\n');
+    const lines = decoded.split(/\r?\n/);
     const cookies = [];
     for (let line of lines) {
         line = line.trim();
         if (!line || line.startsWith('#')) continue;
         const tabs = line.split(/\t/);
         if (tabs.length >= 7) {
-            cookies.push({ 
-                domain: tabs[0], 
-                path: tabs[2], 
-                name: tabs[5], 
-                value: tabs[6] 
-            });
+            cookies.push({ domain: tabs[0], path: tabs[2], name: tabs[5], value: tabs[6] });
         }
     }
     return cookies;
 }
 
+// --- LOGIC TAKEN DIRECTLY FROM YOUR DOCKER CODE ---
 async function performLogin(page) {
     console.log("[AUTH] Navigating to login page...");
     try {
         await page.goto("https://pixai.art/login", { waitUntil: "networkidle2" });
-        await delay(3000);
-        
+        await delay(1000);
+
+        // Bypass initial screen popups (from your code)
+        try {
+            await page.waitForSelector('div[id="root"] > div > div > div > div > div form > div > div button:last-of-type', { timeout: 5000 });
+            await page.click('div[id="root"] > div > div > div > div > div form > div > div button:last-of-type');
+            console.log("[AUTH] Initial screen bypassed.");
+            await delay(2000);
+        } catch (e) {
+            console.log("[AUTH] No initial screen popup found, proceeding.");
+        }
+
+        // Exact IDs from your code
         console.log(`[AUTH] Entering credentials for: ${LOGINNAME}`);
-        await page.type('input[type="email"], input[name="email"], input[autocomplete="username"]', LOGINNAME, { delay: 100 });
-        await page.type('input[type="password"]', PASSWORD, { delay: 100 });
+        await page.waitForSelector("#email-input", { timeout: 10000 });
+        await page.type("#email-input", LOGINNAME, { delay: 50 });
+        await page.type("#password-input", PASSWORD, { delay: 50 });
         
-        await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button'));
-            const loginBtn = btns.find(b => /log in|sign in/i.test(b.innerText));
-            if (loginBtn) loginBtn.click();
-        });
+        await delay(300);
+        await page.waitForSelector('button[type="submit"]');
+        await page.click('button[type="submit"]');
         
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+        console.log("[AUTH] Login successful.");
         return true;
     } catch (e) {
-        console.log("[ERROR] Login interaction failed:", e.message);
+        console.log("[ERROR] Login failed:", e.message);
+        await page.screenshot({ path: `${shotPath}login_error.png` });
         return false;
     }
 }
 
 async function solveTurnstile(page) {
-    console.log("[PROCESS] Locating Cloudflare verification host...");
+    console.log("[PROCESS] Solving Cloudflare Turnstile...");
     const host = await page.evaluateHandle(() => {
         return document.querySelector('#cf-turnstile') || 
                Array.from(document.querySelectorAll('body *')).find(el => /verify you are human/i.test(el.innerText)) || 
@@ -95,11 +101,10 @@ async function solveTurnstile(page) {
     const box = await element.boundingBox();
     if (!box) return false;
 
-    const targetX = box.x + (box.width * 0.1);
+    const targetX = box.x + (box.width * 0.15);
     const targetY = box.y + (box.height / 2);
 
     await page.mouse.click(targetX, targetY, { delay: 150 });
-    console.log("[AUTH] Verification click sent.");
     
     try {
         await page.waitForFunction(() => {
@@ -107,13 +112,11 @@ async function solveTurnstile(page) {
             return !!(el && el.value && el.value.trim().length > 0);
         }, { timeout: 15000 });
         return true;
-    } catch (e) {
-        return true; 
-    }
+    } catch (e) { return true; }
 }
 
 async function run() {
-    console.log(`[INFO] Starting PixAI Auto-Claimer (Cookie + Login Fallback)`);
+    console.log(`[INFO] Starting PixAI Auto-Claimer (Unified Logic)`);
 
     const browser = await puppeteer.launch({
         headless: "new",
@@ -125,52 +128,42 @@ async function run() {
     await page.setViewport({ width: 1280, height: 1024 });
 
     try {
-        // --- 1. COOKIE ATTEMPT ---
         const localCookies = await parseLocalCookies(COOKIE_STRING);
         console.log(`[INFO] Parsed ${localCookies.length} cookies.`);
 
         if (localCookies.length > 0) {
             await page.goto("https://pixai.art", { waitUntil: "networkidle2" });
             await applyCookies(page, localCookies);
-            console.log("[INFO] Cookies applied. Testing session...");
         }
 
-        // --- 2. VERIFY LOGIN STATE ---
         await page.goto(url, { waitUntil: "networkidle2" });
-        await delay(5000);
+        await delay(8000);
         
         const needsLogin = await page.evaluate(() => {
             const text = document.body.innerText;
             return text.includes('Log In') || text.includes('Sign In') || !text.includes('Credits');
         });
 
-        if (needsLogin) {
-            if (LOGINNAME && PASSWORD) {
-                console.log("[INFO] Not logged in. Starting credential fallback...");
-                await performLogin(page);
-                await page.goto(url, { waitUntil: "networkidle2" });
-                await delay(5000);
-            } else {
-                console.log("[ERROR] Login required but no credentials provided.");
-            }
-        } else {
-            console.log("[INFO] Session active (Logged In).");
+        if (needsLogin && LOGINNAME && PASSWORD) {
+            console.log("[INFO] Session invalid. Falling back to LOGINNAME/PASSWORD...");
+            await performLogin(page);
+            await page.goto(url, { waitUntil: "networkidle2" });
+            await delay(8000);
         }
 
         await page.screenshot({ path: `${shotPath}debug_initial_load.png` });
 
-        // --- 3. CLAIM LOGIC ---
         const pageContent = await page.evaluate(() => document.body.innerText);
         const modalPresent = pageContent.includes('Daily Claim') || pageContent.includes('Reward');
         const alreadyClaimed = /Next reward available/i.test(pageContent) || /Credits claimed!/i.test(pageContent);
 
         if (!modalPresent) {
-            console.log(alreadyClaimed ? "[INFO] Already claimed today." : "[INFO] Popup not detected. Check debug_initial_load.png");
+            console.log(alreadyClaimed ? "[INFO] Already claimed today." : "[INFO] Popup not detected.");
             return;
         }
 
         await solveTurnstile(page);
-        await delay(8000);
+        await delay(10000);
 
         const result = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
@@ -183,7 +176,7 @@ async function run() {
         });
 
         console.log(`[RESULT] Claim Status: ${result}`);
-        await delay(3000);
+        await delay(5000);
         await page.screenshot({ path: `${shotPath}2_after_claim.png` });
 
     } catch (e) {
