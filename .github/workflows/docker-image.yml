@@ -31,4 +31,4 @@ jobs:
           context: .
           push: true
           # Must be lowercase
-          tags: ghcr.io/markld95/auto-pixai:latest
+          tags: ghcr.io/rurirune/auto-pixai:latest
