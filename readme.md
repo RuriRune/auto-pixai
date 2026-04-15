@@ -1,6 +1,6 @@
 <h1 align="center">
     <img width="120" height="120" src="public/pic/logo.png" alt=""><br>
-    auto-pixai
+    auto-pixai-en
 </h1>
 
 <p align="center">
