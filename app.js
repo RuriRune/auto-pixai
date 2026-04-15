@@ -254,58 +254,11 @@ async function run() {
             await page.screenshot({ path: `${shotPath}2_after_claim.png` });
             return;
         }
-
-        let claimInfo = await getClaimButtonInfo(page);
-        if (claimInfo && !claimInfo.disabled) {
-            console.log("[INFO] Claim button already enabled.");
-            const claimResult = await clickClaimButton(page);
-            console.log(`[RESULT] Claim Status: ${claimResult}`);
-            await delay(5000);
-            await page.screenshot({ path: `${shotPath}2_after_claim.png` });
-            return;
-        }
-
-        const solved = await solveTurnstile(page);
-
-        if (!solved) {
-            console.log("[RESULT] Claim Status: VERIFY_FAILED");
-            await delay(5000);
-            await page.screenshot({ path: `${shotPath}2_after_claim.png` });
-            return;
-        }
-
-        console.log("[WAIT] Processing verification and waiting for claim button...");
-        try {
-            await waitForClaimEnabled(page, 25000);
-        } catch (e) {
-            console.log("[WAIT] Claim button did not enable in time.");
-        }
-
-        if (await isAlreadyClaimedState(page)) {
-            console.log("[INFO] Already claimed today.");
-            await page.screenshot({ path: `${shotPath}2_after_claim.png` });
-            return;
-        }
-
-        claimInfo = await getClaimButtonInfo(page);
-        if (claimInfo) {
-            console.log(`[INFO] Claim button text: "${claimInfo.text}" | disabled=${claimInfo.disabled}`);
-        } else {
-            console.log("[INFO] Claim button not found after verification.");
-        }
-
-        const claimResult = await clickClaimButton(page);
-        console.log(`[RESULT] Claim Status: ${claimResult}`);
-
-        await delay(5000);
-        await page.screenshot({ path: `${shotPath}2_after_claim.png` });
-
+        
+        // Final login/claim logic would continue here...
     } catch (e) {
-        console.error("[FATAL ERROR]", e.message);
+        console.error("[ERROR]", e);
     } finally {
-        await browser.close();
-        console.log("[EXIT] Done.");
+        // await browser.close();
     }
 }
-
-run();
