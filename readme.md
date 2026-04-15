@@ -4,9 +4,9 @@
 </h1>
 
 <p align="center">
-    <a href="https://github.com/markld95/auto-pixai/blob/main/LICENSE"><img src="https://img.shields.io/github/license/markld95/auto-pixai?style=flat-square"></a>
-    <a href="https://github.com/markld95/auto-pixai"><img src="https://img.shields.io/github/stars/markld95/auto-pixai?style=flat-square"></a>
-    <a href="https://github.com/markld95/auto-pixai/pkgs/container/auto-pixai"><img src="https://img.shields.io/badge/version-2.1.0-orange?style=flat-square"></a>
+    <a href="https://github.com/RuriRune/auto-pixai/blob/main/LICENSE"><img src="https://img.shields.io/github/license/RuriRune/auto-pixai?style=flat-square"></a>
+    <a href="https://github.com/RuriRune/auto-pixai"><img src="https://img.shields.io/github/stars/RuriRune/auto-pixai?style=flat-square"></a>
+    <a href="https://github.com/RuriRune/auto-pixai/pkgs/container/auto-pixai"><img src="https://img.shields.io/badge/version-2.1.0-orange?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -64,7 +64,7 @@ Ensure your volume path points to the folder containing `cookies.json`.
 ```yaml
 services:
   pixai-claimer:
-    image: ghcr.io/markld95/auto-pixai:latest
+    image: ghcr.io/RuriRune/auto-pixai:latest
     container_name: auto-pixai
     volumes:
       - /path/to/your-local-folder:/data
