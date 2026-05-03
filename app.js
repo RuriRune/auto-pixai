@@ -84,7 +84,7 @@ async function solveTurnstile(page) {
 
     // Click target: slightly offset into the checkbox area
     const targetX = box.x + 25;
-    const targetY = box.y + (box.height / 2);
+    constY = box.y + (box.height / 2);
 
     await page.mouse.move(targetX, targetY, { steps: 10 });
     await page.mouse.click(targetX, targetY, { delay: 100 });
@@ -96,9 +96,9 @@ async function solveTurnstile(page) {
 }
 
 /**
- * Handles login if cookies are invalid or missing
+ * Handles login if cookies are invalid or missing, and saves new cookies
  */
-async function login(page, username, password) {
+async function loginAndSaveCookies(page, username, password) {
     console.log("[AUTH] Navigating to login page...");
     await page.goto(LOGIN_URL, { waitUntil: "networkidle2" });
     await delay(3000);
@@ -114,7 +114,7 @@ async function login(page, username, password) {
         );
         await delay(3000);
     } catch (e) {
-        // Ignore if popup doesn't appear
+        // Ignored if popup doesn't appear
     }
 
     console.log("[AUTH] Entering credentials...");
@@ -132,6 +132,11 @@ async function login(page, username, password) {
     } catch (e) {
         // Ignored
     }
+
+    // Save newly generated session cookies to /data/cookies.json
+    const newCookies = await page.cookies();
+    fs.writeFileSync(cookiesPath, JSON.stringify(newCookies, null, 2));
+    console.log(`[AUTH] Successfully logged in and saved ${newCookies.length} new cookies to /data/cookies.json`);
 }
 
 async function run() {
@@ -183,7 +188,7 @@ async function run() {
             if (!username || !password) {
                 throw new Error("Critical: Cookies were invalid/missing, and no LOGINNAME/PASSWORD set in environment variables.");
             }
-            await login(page, username, password);
+            await loginAndSaveCookies(page, username, password);
             // Go back to the main generator page after logging in
             await page.goto(URL, { waitUntil: "networkidle2" });
         }
