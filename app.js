@@ -232,38 +232,87 @@ async function doLogin(page) {
     if (onStandalonePage) {
         log("LOGIN", "Standalone login page detected — skipping modal steps.");
     } else {
-        // PATH A: need to open the modal first
+        // PATH A: open modal, then switch to Sign in tab
         log("LOGIN", "Step 1: Clicking top-right 'Sign in'...");
         if (!await clickButtonByText(page, /^sign\s*in$/, 8000, "login_fail_step1")) return false;
-        await delay(1000);
+        await delay(1200);
         await page.screenshot({ path: `${DATA_PATH}login_step1.png` });
 
-        // Modal is now open on Sign Up tab — click the "Sign in" tab to switch
-        log("LOGIN", "Step 2: Clicking 'Sign in' tab inside modal...");
-        // The tab is a button/div with exact text "Sign in" — wait for it to be visible inside the modal
-        try {
-            await page.waitForFunction(() => {
-                const els = Array.from(document.querySelectorAll("button, [role='tab'], div, span"));
-                return els.some(el => {
-                    const txt = (el.innerText || el.textContent || "").trim();
-                    return /^sign\s*in$/i.test(txt);
-                });
-            }, { timeout: 8000 });
+        // Step 2: click the "Sign in" tab (right tab of the Sign Up | Sign in pair)
+        // Strategy: find the tab row container that holds both tabs, click the Sign in one specifically
+        log("LOGIN", "Step 2: Switching modal to Sign in tab...");
 
-            await page.evaluate(() => {
-                const els = Array.from(document.querySelectorAll("button, [role='tab'], div, span"));
-                const tab = els.find(el => /^sign\s*in$/i.test((el.innerText || el.textContent || "").trim()));
-                if (tab) tab.click();
+        const tabSwitched = await page.evaluate(() => {
+            // Find smallest container whose direct children include both "Sign Up" and "Sign in" text
+            const candidates = Array.from(document.querySelectorAll("div, nav, ul, [role='tablist']"));
+            const tabRow = candidates.find(el => {
+                if (el.children.length < 2) return false;
+                const childTexts = Array.from(el.children).map(c => (c.innerText || c.textContent || "").trim());
+                return childTexts.some(t => /^sign\s*up$/i.test(t)) &&
+                       childTexts.some(t => /^sign\s*in$/i.test(t));
             });
-        } catch (e) {
-            log("LOGIN", `Sign in tab not found: ${e.message}`);
+            if (!tabRow) return "NO_TAB_ROW";
+
+            // Click whichever child matches "Sign in"
+            const signInTab = Array.from(tabRow.children)
+                .find(el => /^sign\s*in$/i.test((el.innerText || el.textContent || "").trim()));
+            if (!signInTab) return "NO_SIGNIN_CHILD";
+
+            signInTab.click();
+            return "CLICKED";
+        });
+
+        log("LOGIN", `Tab DOM result: ${tabSwitched}`);
+
+        if (tabSwitched !== "CLICKED") {
+            // Coordinate fallback — modal is ~612px wide centered, tabs are ~155px from modal top
+            // Sign in tab is the right half of the tab row
+            log("LOGIN", "DOM tab click failed — using coordinate fallback...");
+            try {
+                const modalInfo = await page.evaluate(() => {
+                    // Try common modal selectors
+                    const sel = [
+                        '[role="dialog"]', '[class*="modal"]', '[class*="Modal"]',
+                        '[class*="dialog"]', '[class*="Dialog"]', '[class*="popup"]'
+                    ].join(", ");
+                    const el = document.querySelector(sel);
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                });
+
+                if (modalInfo) {
+                    // Sign in tab = right half of tab row, ~155px below modal top
+                    const tx = modalInfo.x + modalInfo.w * 0.72;
+                    const ty = modalInfo.y + 155;
+                    log("LOGIN", `Coordinate click Sign in tab: ${Math.round(tx)}, ${Math.round(ty)}`);
+                    await page.mouse.click(tx, ty);
+                } else {
+                    // Absolute fallback for 1280x1024 — modal centred, tab row at ~y=370
+                    log("LOGIN", "No modal found — absolute coordinate fallback (694, 372)");
+                    await page.mouse.click(694, 372);
+                }
+            } catch (e) {
+                log("LOGIN", `Coordinate fallback error: ${e.message}`);
+                await page.screenshot({ path: `${DATA_PATH}login_fail_step2.png` });
+                return false;
+            }
+        }
+
+        // Wait for modal content to confirm switch: "Sign up with Email" → "Continue with Email"
+        try {
+            await page.waitForFunction(() =>
+                /continue with email/i.test(document.body ? document.body.innerText : ""),
+                { timeout: 8000 }
+            );
+            log("LOGIN", "Modal confirmed switched to Sign in view.");
+        } catch (_) {
+            log("LOGIN", "Modal did not switch to Sign in view — check login_fail_step2.png");
             await page.screenshot({ path: `${DATA_PATH}login_fail_step2.png` });
             return false;
         }
 
-        // Wait for the tab to fully switch — "Sign up with Email" should become "Continue with Email"
-        // or the Sign in tab becomes visually active
-        await delay(1200);
+        await delay(400);
         await page.screenshot({ path: `${DATA_PATH}login_step2.png` });
     }
 
