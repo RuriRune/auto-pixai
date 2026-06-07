@@ -151,22 +151,30 @@ async function solveTurnstile(page) {
     if (cfFrame) {
         log("TURNSTILE", `CF frame found: ${cfFrame.url()}`);
 
-        // Get the iframe element handle to find its page-level bounding box
-        const iframeEl = await page.evaluateHandle(() => {
-            return Array.from(document.querySelectorAll("iframe")).find(f =>
-                (f.src || "").includes("challenges.cloudflare.com") ||
-                (f.src || "").includes("turnstile")
-            ) || null;
-        });
-        const iframeElEl = iframeEl.asElement();
-        const box = iframeElEl ? await iframeElEl.boundingBox() : null;
+        // The iframe has no src in the DOM (Cloudflare sets it dynamically),
+        // so we can't find it by src. Instead use Puppeteer's frameElement()
+        // to get the actual DOM element handle, then get its bounding box.
+        let box = null;
+        try {
+            const frameElementHandle = await cfFrame.frameElement();
+            if (frameElementHandle) {
+                box = await frameElementHandle.boundingBox();
+                log("TURNSTILE", box
+                    ? `CF iframe box via frameElement(): x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`
+                    : "frameElement() returned handle but boundingBox() is null"
+                );
+            } else {
+                log("TURNSTILE", "frameElement() returned null");
+            }
+        } catch (e) {
+            log("TURNSTILE", `frameElement() error: ${e.message}`);
+        }
 
         if (box) {
-            log("TURNSTILE", `CF iframe box: x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
-            // Click the checkbox — it's at ~x+22, vertically centred in the iframe
+            // Page-level mouse click — most reliable for cross-origin iframes
             const cx = box.x + 22;
             const cy = box.y + (box.height / 2);
-            log("TURNSTILE", `Clicking at page coords: ${Math.round(cx)}, ${Math.round(cy)}`);
+            log("TURNSTILE", `Clicking checkbox at page coords: ${Math.round(cx)}, ${Math.round(cy)}`);
             await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
             await delay(250 + Math.random() * 150);
             await page.mouse.move(cx - 20, cy - 8,  { steps: 12 });
@@ -175,12 +183,55 @@ async function solveTurnstile(page) {
             await delay(80  + Math.random() * 60);
             await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
         } else {
-            // No bounding box — click inside the frame's coordinate space directly
-            log("TURNSTILE", "No bounding box for CF iframe — clicking inside frame at (22, 32)");
-            await cfFrame.evaluate(() => {
-                const cb = document.querySelector("input[type='checkbox']");
-                if (cb) cb.click();
-            });
+            // Last resort: find ALL iframes, pick the one whose contentWindow
+            // matches the CF frame, get its bounding box that way
+            log("TURNSTILE", "Trying fallback: iterate all iframe elements for CF frame...");
+            const iframeHandles = await page.$$("iframe");
+            let foundBox = null;
+            for (const handle of iframeHandles) {
+                try {
+                    const contentFrame = await handle.contentFrame();
+                    if (contentFrame && contentFrame.url().includes("challenges.cloudflare.com")) {
+                        foundBox = await handle.boundingBox();
+                        log("TURNSTILE", foundBox
+                            ? `Found CF iframe via $$: x=${Math.round(foundBox.x)} y=${Math.round(foundBox.y)} w=${Math.round(foundBox.width)} h=${Math.round(foundBox.height)}`
+                            : "Found CF iframe via $$ but boundingBox() null"
+                        );
+                        break;
+                    }
+                } catch (_) {}
+            }
+
+            if (foundBox) {
+                const cx = foundBox.x + 22;
+                const cy = foundBox.y + (foundBox.height / 2);
+                log("TURNSTILE", `Clicking at: ${Math.round(cx)}, ${Math.round(cy)}`);
+                await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
+                await delay(250 + Math.random() * 150);
+                await page.mouse.move(cx - 20, cy - 8,  { steps: 12 });
+                await delay(120 + Math.random() * 80);
+                await page.mouse.move(cx,       cy,      { steps: 6  });
+                await delay(80  + Math.random() * 60);
+                await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
+            } else {
+                // Absolute last resort: use the host element bounding box
+                log("TURNSTILE", "All iframe strategies failed — using host element bounding box...");
+                const host = await getTurnstileHostHandle(page);
+                const hostBox = host ? await host.boundingBox() : null;
+                if (hostBox) {
+                    const cx = hostBox.x + 22;
+                    const cy = hostBox.y + (hostBox.height / 2);
+                    log("TURNSTILE", `Host element click at: ${Math.round(cx)}, ${Math.round(cy)}`);
+                    await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
+                    await delay(250 + Math.random() * 150);
+                    await page.mouse.move(cx,       cy,      { steps: 6  });
+                    await delay(80  + Math.random() * 60);
+                    await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
+                } else {
+                    log("TURNSTILE", "No clickable target found — giving up on Turnstile.");
+                    return false;
+                }
+            }
         }
     } else {
         // Strategy 2: fallback to host element page-coords click
