@@ -204,30 +204,92 @@ async function clickButtonByText(page, pattern, timeout = 8000, screenshotName =
 }
 
 // ─── Login flow ────────────────────────────────────────────────────────────
-// Step 1: "Sign in" top-right  →  Step 2: "Sign in" inside modal
-// Step 3: "Continue with email"  →  Step 4/5: email + password
-// Step 6: "Login" button
+// Two possible UI paths:
+//
+// PATH A — Modal (triggered when visiting generator while logged out):
+//   Top-right "Sign in" → modal opens on Sign Up tab
+//   → click "Sign in" tab → tab switches, same modal
+//   → click "Continue with Email" button
+//   → email + password fields appear → fill → click "Log in"
+//
+// PATH B — Standalone page (redirect to /login or /en/login):
+//   Already shows Sign in tab active
+//   → click "Continue with Email"
+//   → email + password fields → fill → click "Log in"
+//
 async function doLogin(page) {
     if (!LOGIN_NAME || !PASSWORD) {
         log("Critical", "LOGINNAME or PASSWORD env vars not set — cannot log in.");
         return false;
     }
 
-    log("LOGIN", "Step 1: Clicking top-right 'Sign in'...");
-    if (!await clickButtonByText(page, /^sign\s*in$/, 8000, "login_fail_step1")) return false;
-    await delay(900);
-    await page.screenshot({ path: `${DATA_PATH}login_step1.png` });
+    // Detect which path we're on
+    const onStandalonePage = await page.evaluate(() =>
+        /\/(en\/)?login/i.test(window.location.pathname) ||
+        /Welcome back to PixAI/i.test(document.body ? document.body.innerText : "")
+    );
 
-    log("LOGIN", "Step 2: Clicking 'Sign in' inside modal...");
-    if (!await clickButtonByText(page, /^sign\s*in$/, 8000, "login_fail_step2")) return false;
-    await delay(900);
-    await page.screenshot({ path: `${DATA_PATH}login_step2.png` });
+    if (onStandalonePage) {
+        log("LOGIN", "Standalone login page detected — skipping modal steps.");
+    } else {
+        // PATH A: need to open the modal first
+        log("LOGIN", "Step 1: Clicking top-right 'Sign in'...");
+        if (!await clickButtonByText(page, /^sign\s*in$/, 8000, "login_fail_step1")) return false;
+        await delay(1000);
+        await page.screenshot({ path: `${DATA_PATH}login_step1.png` });
 
-    log("LOGIN", "Step 3: Clicking 'Continue with email'...");
-    if (!await clickButtonByText(page, /continue with email/, 8000, "login_fail_step3")) return false;
-    await delay(900);
+        // Modal is now open on Sign Up tab — click the "Sign in" tab to switch
+        log("LOGIN", "Step 2: Clicking 'Sign in' tab inside modal...");
+        // The tab is a button/div with exact text "Sign in" — wait for it to be visible inside the modal
+        try {
+            await page.waitForFunction(() => {
+                const els = Array.from(document.querySelectorAll("button, [role='tab'], div, span"));
+                return els.some(el => {
+                    const txt = (el.innerText || el.textContent || "").trim();
+                    return /^sign\s*in$/i.test(txt);
+                });
+            }, { timeout: 8000 });
+
+            await page.evaluate(() => {
+                const els = Array.from(document.querySelectorAll("button, [role='tab'], div, span"));
+                const tab = els.find(el => /^sign\s*in$/i.test((el.innerText || el.textContent || "").trim()));
+                if (tab) tab.click();
+            });
+        } catch (e) {
+            log("LOGIN", `Sign in tab not found: ${e.message}`);
+            await page.screenshot({ path: `${DATA_PATH}login_fail_step2.png` });
+            return false;
+        }
+
+        // Wait for the tab to fully switch — "Sign up with Email" should become "Continue with Email"
+        // or the Sign in tab becomes visually active
+        await delay(1200);
+        await page.screenshot({ path: `${DATA_PATH}login_step2.png` });
+    }
+
+    // Both paths converge here: click "Continue with Email"
+    log("LOGIN", "Step 3: Clicking 'Continue with Email'...");
+    try {
+        await page.waitForFunction(() => {
+            const els = Array.from(document.querySelectorAll("button, [role='button'], a, div"));
+            return els.some(el => /continue with email/i.test((el.innerText || el.textContent || "").trim()));
+        }, { timeout: 8000 });
+
+        await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll("button, [role='button'], a, div"));
+            const btn = els.find(el => /continue with email/i.test((el.innerText || el.textContent || "").trim()));
+            if (btn) btn.click();
+        });
+    } catch (e) {
+        log("LOGIN", `'Continue with Email' not found: ${e.message}`);
+        await page.screenshot({ path: `${DATA_PATH}login_fail_step3.png` });
+        return false;
+    }
+
+    await delay(1000);
     await page.screenshot({ path: `${DATA_PATH}login_step3.png` });
 
+    // Step 4: Fill email
     log("LOGIN", "Step 4: Typing email...");
     try {
         await page.waitForSelector(
@@ -243,6 +305,7 @@ async function doLogin(page) {
         return false;
     }
 
+    // Step 5: Fill password
     log("LOGIN", "Step 5: Typing password...");
     try {
         await page.waitForSelector('input[type="password"]', { timeout: 5000 });
@@ -256,25 +319,27 @@ async function doLogin(page) {
     }
 
     await delay(400);
+    await page.screenshot({ path: `${DATA_PATH}login_step4_filled.png` });
 
-    log("LOGIN", "Step 6: Clicking 'Login' button...");
-    const clicked = await clickButtonByText(page, /^log\s*in$/, 5000);
+    // Step 6: Click Log in / Login submit button
+    log("LOGIN", "Step 6: Clicking submit/login button...");
+    const clicked = await clickButtonByText(page, /^log[\s\-]?in$/i, 5000);
     if (!clicked) {
         log("LOGIN", "Login button not found by text — pressing Enter as fallback...");
         await page.keyboard.press("Enter");
     }
 
+    // Wait for session to confirm — Sign in button disappears from top right
     log("LOGIN", "Waiting for session to confirm...");
     try {
         await page.waitForFunction(() => {
             const buttons = Array.from(document.querySelectorAll("button, [role='button'], a"));
-            const stillHasSignIn = buttons.some(el =>
+            return !buttons.some(el =>
                 /^sign\s*in$/i.test((el.innerText || el.textContent || "").trim())
             );
-            return !stillHasSignIn;
-        }, { timeout: 15000 });
+        }, { timeout: 20000 });
     } catch (_) {
-        log("Critical", "Session not confirmed after 15s — login likely failed.");
+        log("Critical", "Session not confirmed after 20s — login likely failed.");
         await page.screenshot({ path: `${DATA_PATH}login_fail_confirm.png` });
         return false;
     }
