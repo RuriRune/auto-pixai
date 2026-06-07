@@ -119,38 +119,69 @@ async function solveTurnstile(page) {
     log("TURNSTILE", "Warming up mouse before verification...");
     await humanWarm(page);
 
-    const host = await getTurnstileHostHandle(page);
-    if (!host) {
-        log("TURNSTILE", "Widget not found — skipping.");
-        return false;
+    // The Turnstile widget renders inside a cross-origin iframe.
+    // We need to find that iframe, get its position, then click the
+    // checkbox which sits at roughly x+20, y+centre within the iframe.
+    log("TURNSTILE", "Locating Turnstile iframe...");
+
+    // First try: find the iframe by known Cloudflare src patterns
+    const iframeBox = await page.evaluate(() => {
+        const frames = Array.from(document.querySelectorAll("iframe"));
+        const cf = frames.find(f =>
+            (f.src || "").includes("challenges.cloudflare.com") ||
+            (f.src || "").includes("turnstile") ||
+            (f.title || "").toLowerCase().includes("cloudflare") ||
+            (f.title || "").toLowerCase().includes("turnstile") ||
+            (f.id   || "").toLowerCase().includes("turnstile")
+        );
+        if (!cf) return null;
+        const r = cf.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height, src: cf.src };
+    });
+
+    let checkboxX, checkboxY;
+
+    if (iframeBox) {
+        log("TURNSTILE", `Iframe found: x=${Math.round(iframeBox.x)} y=${Math.round(iframeBox.y)} w=${Math.round(iframeBox.width)} h=${Math.round(iframeBox.height)}`);
+        // Checkbox is on the left side of the iframe, vertically centred
+        checkboxX = iframeBox.x + 20;
+        checkboxY = iframeBox.y + (iframeBox.height / 2);
+    } else {
+        // Fallback: use the host element bounding box approach
+        log("TURNSTILE", "Iframe not found by src — falling back to host element...");
+        const host = await getTurnstileHostHandle(page);
+        if (!host) {
+            log("TURNSTILE", "Widget not found at all — skipping.");
+            return false;
+        }
+        const box = await host.boundingBox();
+        if (!box) {
+            log("TURNSTILE", "Widget found but no bounding box.");
+            return false;
+        }
+        log("TURNSTILE", `Host element: x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
+        checkboxX = box.x + 20;
+        checkboxY = box.y + (box.height / 2);
     }
 
-    const box = await host.boundingBox();
-    if (!box) {
-        log("TURNSTILE", "Widget found but no bounding box.");
-        return false;
-    }
+    log("TURNSTILE", `Checkbox target: x=${Math.round(checkboxX)} y=${Math.round(checkboxY)}`);
 
-    log("TURNSTILE", `Widget at x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
+    // Human-like approach: move in from above-left, pause, then click
+    await page.mouse.move(checkboxX - 80, checkboxY - 40, { steps: 20 });
+    await delay(300 + Math.random() * 200);
+    await page.mouse.move(checkboxX - 30, checkboxY - 10, { steps: 15 });
+    await delay(150 + Math.random() * 100);
+    await page.mouse.move(checkboxX,       checkboxY,     { steps: 8  });
+    await delay(100 + Math.random() * 80);
+    await page.mouse.click(checkboxX, checkboxY, { delay: 60 + Math.random() * 80 });
 
-    const targetX = box.x + Math.min(24, box.width * 0.1);
-    const targetY = box.y + box.height / 2;
-
-    await page.mouse.move(targetX - 40, targetY - 20, { steps: 18 });
-    await delay(200);
-    await page.mouse.move(targetX - 10, targetY - 5,  { steps: 12 });
-    await delay(150);
-    await page.mouse.move(targetX,       targetY,      { steps: 8  });
-    await delay(120);
-    await page.mouse.click(targetX, targetY, { delay: 80 + Math.random() * 60 });
-
-    log("TURNSTILE", "Click sent — waiting for token...");
+    log("TURNSTILE", "Click sent — waiting for token (up to 20s)...");
 
     try {
         await page.waitForFunction(() => {
             const el = document.querySelector('input[name="cf-turnstile-response"]');
             return !!(el && el.value && el.value.trim().length > 0);
-        }, { timeout: 15000 });
+        }, { timeout: 20000 });
 
         const val = await page.evaluate(() => {
             const el = document.querySelector('input[name="cf-turnstile-response"]');
@@ -159,7 +190,6 @@ async function solveTurnstile(page) {
         log("TURNSTILE", `Token received (${val.length} chars).`);
         return true;
     } catch (_) {
-        // Check if Cloudflare explicitly showed a failure state
         const failed = await page.evaluate(() =>
             /verification failed/i.test(document.body ? document.body.innerText : "")
         );
@@ -167,7 +197,7 @@ async function solveTurnstile(page) {
             log("VERIFY_FAILED", "Cloudflare Turnstile returned a failure state.");
             return false;
         }
-        log("TURNSTILE", "No token after 15s — proceeding anyway.");
+        log("TURNSTILE", "No token after 20s — proceeding anyway.");
         return false;
     }
 }
