@@ -317,39 +317,85 @@ async function doLogin(page) {
     }
 
     // Both paths converge here: click "Continue with Email"
+    // Use a real mouse click via bounding box — .click() on a div wrapper doesn't trigger React handlers
     log("LOGIN", "Step 3: Clicking 'Continue with Email'...");
     try {
         await page.waitForFunction(() => {
             const els = Array.from(document.querySelectorAll("button, [role='button'], a, div"));
             return els.some(el => /continue with email/i.test((el.innerText || el.textContent || "").trim()));
         }, { timeout: 8000 });
-
-        await page.evaluate(() => {
-            const els = Array.from(document.querySelectorAll("button, [role='button'], a, div"));
-            const btn = els.find(el => /continue with email/i.test((el.innerText || el.textContent || "").trim()));
-            if (btn) btn.click();
-        });
     } catch (e) {
         log("LOGIN", `'Continue with Email' not found: ${e.message}`);
         await page.screenshot({ path: `${DATA_PATH}login_fail_step3.png` });
         return false;
     }
 
-    await delay(1000);
+    // Get bounding box of the innermost matching element and do a real mouse click
+    const emailBtnClicked = await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll("*"));
+        // Find the innermost element whose trimmed text is exactly (or contains only) "Continue with Email"
+        const matches = all.filter(el =>
+            /continue with email/i.test((el.innerText || el.textContent || "").trim()) &&
+            el.children.length <= 2  // avoid large wrappers
+        );
+        if (!matches.length) return null;
+        // Pick the smallest one (most specific)
+        const target = matches.reduce((a, b) =>
+            (a.offsetWidth * a.offsetHeight) < (b.offsetWidth * b.offsetHeight) ? a : b
+        );
+        const r = target.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+
+    if (emailBtnClicked) {
+        log("LOGIN", `Mouse clicking 'Continue with Email' at ${Math.round(emailBtnClicked.x)}, ${Math.round(emailBtnClicked.y)}`);
+        await page.mouse.click(emailBtnClicked.x, emailBtnClicked.y);
+    } else {
+        // Absolute fallback — button is centred in modal at roughly y=604 on 1280x1024
+        log("LOGIN", "Could not get bounding box — using coordinate fallback for Continue with Email");
+        await page.mouse.click(612, 604);
+    }
+
+    await delay(1200);
     await page.screenshot({ path: `${DATA_PATH}login_step3.png` });
 
     // Step 4: Fill email
-    log("LOGIN", "Step 4: Typing email...");
+    // Wait for ANY text input to appear (the email form animates in after clicking Continue with Email)
+    log("LOGIN", "Step 4: Waiting for email input to appear...");
+    await page.screenshot({ path: `${DATA_PATH}login_step3b_before_email.png` });
     try {
-        await page.waitForSelector(
-            'input[type="email"], input[name="email"], input[placeholder*="email" i]',
-            { timeout: 8000 }
-        );
-        await page.click('input[type="email"], input[name="email"], input[placeholder*="email" i]');
-        await delay(200);
-        await page.keyboard.type(LOGIN_NAME, { delay: 55 + Math.random() * 45 });
+        await page.waitForFunction(() => {
+            const inputs = Array.from(document.querySelectorAll("input"));
+            return inputs.some(i =>
+                i.type === "email" ||
+                i.type === "text" ||
+                (i.placeholder && /email|mail/i.test(i.placeholder)) ||
+                (i.name && /email|mail/i.test(i.name))
+            );
+        }, { timeout: 10000 });
     } catch (e) {
         log("Critical", `Email field not found: ${e.message}`);
+        await page.screenshot({ path: `${DATA_PATH}login_fail_email.png` });
+        return false;
+    }
+
+    log("LOGIN", "Step 4: Typing email...");
+    try {
+        // Click and type into the first matching input
+        await page.evaluate(() => {
+            const inputs = Array.from(document.querySelectorAll("input"));
+            const field = inputs.find(i =>
+                i.type === "email" ||
+                (i.placeholder && /email|mail/i.test(i.placeholder)) ||
+                (i.name && /email|mail/i.test(i.name)) ||
+                i.type === "text"
+            );
+            if (field) field.focus();
+        });
+        await delay(150);
+        await page.keyboard.type(LOGIN_NAME, { delay: 55 + Math.random() * 45 });
+    } catch (e) {
+        log("Critical", `Failed to type email: ${e.message}`);
         await page.screenshot({ path: `${DATA_PATH}login_fail_email.png` });
         return false;
     }
