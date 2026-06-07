@@ -119,38 +119,6 @@ async function getTurnstileHostHandle(page) {
     return verifyRow.asElement() || null;
 }
 
-// Intercept turnstile.render() to capture the callback PixAI registered
-async function interceptTurnstileCallback(page) {
-    await page.evaluateOnNewDocument(() => {
-        window.__turnstileCallbacks = [];
-        // Intercept when CF's turnstile.js calls window.onloadTurnstileCallback
-        // or when PixAI calls turnstile.render({callback: fn})
-        const origDefine = Object.defineProperty.bind(Object);
-        // Proxy window.turnstile once CF sets it
-        let _turnstile = null;
-        origDefine(window, "turnstile", {
-            configurable: true,
-            get() { return _turnstile; },
-            set(val) {
-                _turnstile = val;
-                if (val && typeof val.render === "function") {
-                    const origRender = val.render.bind(val);
-                    val.render = function(container, params) {
-                        if (params && typeof params.callback === "function") {
-                            window.__turnstileCallbacks.push(params.callback);
-                            console.log("[INTERCEPT] turnstile.render callback captured");
-                        }
-                        if (params && typeof params["error-callback"] === "function") {
-                            console.log("[INTERCEPT] error-callback also present");
-                        }
-                        return origRender(container, params);
-                    };
-                }
-            }
-        });
-    });
-}
-
 async function solveWithCapSolver() {
     // Call CapSolver API to get a Turnstile token without any clicking
     if (!CAPSOLVER_KEY) {
@@ -214,81 +182,67 @@ async function solveTurnstile(page) {
     if (CAPSOLVER_KEY) {
         const token = await solveWithCapSolver();
         if (token) {
-            // Use the intercepted callback from turnstile.render() — this is what
-            // PixAI's React component actually listens to, not DOM events.
-            const injected = await page.evaluate((t) => {
-                const results = [];
-
-                // 1. BEST: call the captured render callback directly
-                if (window.__turnstileCallbacks && window.__turnstileCallbacks.length > 0) {
-                    window.__turnstileCallbacks.forEach((cb, i) => {
-                        try { cb(t); results.push(`captured_callback_${i}`); } catch(e) {
-                            results.push(`captured_callback_${i}_err:${e.message}`);
-                        }
+            // Use the token to call PixAI's claim API directly via fetch()
+            // inside the browser context — this uses the authenticated session
+            // cookies automatically and bypasses the frontend React state entirely.
+            log("TURNSTILE", "Attempting direct API claim with token...");
+            const apiResult = await page.evaluate(async (t) => {
+                try {
+                    // First get the user token from PixAI's own API
+                    const meRes = await fetch("https://api.pixai.art/graphql", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({
+                            query: `query { me { id } }`
+                        })
                     });
-                }
+                    const meData = await meRes.json();
+                    const userId = meData?.data?.me?.id;
 
-                // 2. Set the hidden input with React native setter
-                const input = document.querySelector('input[name="cf-turnstile-response"]');
-                if (input) {
-                    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
-                        .set.call(input, t);
-                    input.dispatchEvent(new Event("input",  { bubbles: true }));
-                    input.dispatchEvent(new Event("change", { bubbles: true }));
-                    input.dispatchEvent(new Event("blur",   { bubbles: true }));
-                    results.push("input_set");
-                }
-
-                // 3. data-callback attribute on container
-                const container = document.querySelector('[data-sitekey], #cf-turnstile, [class*="cf-turnstile"]');
-                if (container) {
-                    const cbName = container.getAttribute("data-callback");
-                    if (cbName && typeof window[cbName] === "function") {
-                        try { window[cbName](t); results.push(`data-callback:${cbName}`); } catch(e) {}
-                    }
-                }
-
-                // 4. window.turnstile internal state
-                if (window.turnstile) {
-                    // Try _cfChallengeWidgets or similar internal maps
-                    for (const key of ["_widgets", "widgets", "_cfWidgets", "__widgets"]) {
-                        const map = window.turnstile[key];
-                        if (map && typeof map === "object") {
-                            Object.values(map).forEach(w => {
-                                if (w && typeof w.callback === "function") {
-                                    try { w.callback(t); results.push(`turnstile.${key}.callback`); } catch(e) {}
+                    // Call the daily claim mutation with the turnstile token
+                    const claimRes = await fetch("https://api.pixai.art/graphql", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({
+                            query: `mutation ClaimDailyReward($token: String!) {
+                                claimDailyReward(turnstileToken: $token) {
+                                    id
+                                    amount
                                 }
-                            });
-                        }
-                    }
+                            }`,
+                            variables: { token: t }
+                        })
+                    });
+                    const claimData = await claimRes.json();
+                    return { ok: true, userId, claimData };
+                } catch(e) {
+                    return { ok: false, error: e.message };
                 }
-
-                // 5. postMessage — some integrations use this
-                window.postMessage({ source: "cloudflare-challenge", token: t }, "*");
-                window.postMessage({ "cf-turnstile-response": t }, "*");
-                results.push("postMessage_sent");
-
-                return results;
             }, token);
 
-            log("TURNSTILE", `Injection results: ${JSON.stringify(injected)}`);
-            await delay(2000);
+            log("TURNSTILE", `API claim result: ${JSON.stringify(apiResult)}`);
 
-            const btnEnabled = await page.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll("button"))
-                    .find(b => /claim/i.test((b.innerText || "").trim()));
-                return btn ? !btn.disabled : false;
-            });
-
-            if (btnEnabled) {
-                log("TURNSTILE", "Claim button enabled — injection successful!");
+            if (apiResult?.claimData?.data?.claimDailyReward) {
+                const reward = apiResult.claimData.data.claimDailyReward;
+                log("CLAIM", `Claim Status: SUCCESS (amount: ${reward.amount})`);
                 return true;
             }
 
-            log("TURNSTILE", "Button still disabled after injection — token accepted but callback not found.");
-            // Return true anyway so we attempt the click — the server-side token
-            // may be valid even if the button didn't visually enable
-            return true;
+            if (apiResult?.claimData?.errors) {
+                const err = apiResult.claimData.errors[0]?.message || "unknown";
+                log("TURNSTILE", `API claim error: ${err}`);
+                // Check if already claimed
+                if (/already|claimed/i.test(err)) {
+                    log("INFO", "already claimed today via API check.");
+                    return true;
+                }
+            }
+
+            // API approach failed — fall through to button click fallback
+            log("TURNSTILE", "Direct API claim failed — will try button click.");
+            return false;
         }
         log("TURNSTILE", "CapSolver failed — falling back to mouse click.");
     }
@@ -682,7 +636,6 @@ async function run() {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     );
     await applyStealthPatches(page);
-    await interceptTurnstileCallback(page);
 
     try {
         // 1. Land on base domain, inject saved cookies, then navigate to generator
@@ -752,16 +705,31 @@ async function run() {
             return;
         }
 
-        // 4. Solve Turnstile
+        // 4. Solve Turnstile + attempt claim
         log("PROCESS", "Solving Cloudflare Turnstile...");
         const turnstileOk = await solveTurnstile(page);
-        if (!turnstileOk) {
-            // VERIFY_FAILED is already logged inside solveTurnstile if CF rejected it
-            // Give it one more second then continue — button may still enable
-        }
         await delay(800);
 
-        // 5. Wait for Claim button to enable
+        // Check if CapSolver already claimed via direct API (logged "Claim Status: SUCCESS" internally)
+        // solveTurnstile returns true if API claim succeeded
+        if (turnstileOk) {
+            // Check if the API path already handled the claim
+            const alreadyDone = await page.evaluate(() => {
+                // If credits changed or modal is gone, claim went through
+                return !document.body.innerText.includes("Verify you are human");
+            });
+
+            if (alreadyDone) {
+                log("CLAIM", "Claim Status: SUCCESS");
+                await delay(1000);
+                await page.screenshot({ path: `${DATA_PATH}2_after_claim.png` });
+                const freshCookies = await page.cookies();
+                saveCookies(freshCookies);
+                return;
+            }
+        }
+
+        // 5. Wait for Claim button to enable (fallback path)
         log("PROCESS", "Waiting for Claim button to enable...");
         try {
             await waitForClaimButtonEnabled(page, 35000);
@@ -775,7 +743,6 @@ async function run() {
         await page.screenshot({ path: `${DATA_PATH}2_after_claim.png` });
 
         if (result === "SUCCESS") {
-            // Refresh cookies so next run skips login entirely
             const freshCookies = await page.cookies();
             saveCookies(freshCookies);
             log("CLAIM", "Claim Status: SUCCESS");
