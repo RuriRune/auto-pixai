@@ -481,18 +481,32 @@ async function clickClaimButton(page) {
 async function run() {
     log("INFO", "Starting PixAI Auto-Claimer");
 
+    // Use Xvfb virtual display in Docker so Chrome runs non-headless.
+    // Cloudflare Turnstile rejects true headless environments — a virtual
+    // display makes Chrome behave identically to a real desktop session.
+    const displayNum = process.env.DISPLAY || ":99";
+    const chromeArgs = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--window-size=1280,1024",
+        "--disable-web-security",
+        "--disable-features=IsolateOrigins,site-per-process",
+        // GPU flags for Xvfb — software rendering, no actual GPU needed
+        "--disable-gpu",
+        "--use-gl=swiftshader",
+        "--use-angle=swiftshader",
+    ];
+
+    if (IS_DOCKER) {
+        chromeArgs.push(`--display=${displayNum}`);
+    }
+
     const browser = await puppeteer.launch({
-        headless: "new",
+        headless: false,           // non-headless so Cloudflare sees a real browser
         executablePath: IS_DOCKER ? "/usr/bin/google-chrome" : undefined,
-        args: [
-            "--disable-gpu",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--window-size=1280,1024",
-            "--disable-web-security",
-            "--disable-features=IsolateOrigins,site-per-process",
-        ],
+        args: chromeArgs,
+        env: IS_DOCKER ? { ...process.env, DISPLAY: displayNum } : process.env,
     });
 
     const page = await browser.newPage();
