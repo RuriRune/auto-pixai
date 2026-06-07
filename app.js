@@ -182,22 +182,97 @@ async function solveTurnstile(page) {
     if (CAPSOLVER_KEY) {
         const token = await solveWithCapSolver();
         if (token) {
-            // Inject the token into the hidden input and fire the callback
-            await page.evaluate((t) => {
-                // Set the hidden input value
+            // PixAI uses Cloudflare's turnstile JS which fires a callback when solved.
+            // Simply setting the hidden input value isn't enough — we need to trigger
+            // the same callback that the CF widget fires after a real solve.
+            const injected = await page.evaluate((t) => {
+                const results = [];
+
+                // 1. Set the hidden input
                 const input = document.querySelector('input[name="cf-turnstile-response"]');
                 if (input) {
                     Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
                         .set.call(input, t);
-                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new Event("input",  { bubbles: true }));
                     input.dispatchEvent(new Event("change", { bubbles: true }));
+                    results.push("input_set");
                 }
-                // Also try to call the turnstile callback if exposed
-                if (window.turnstile && typeof window.turnstile.execute === "function") {
-                    window.turnstile.execute();
+
+                // 2. Call window.turnstile callback directly if available
+                if (window.turnstile) {
+                    if (typeof window.turnstile.implicitRender === "function") {
+                        results.push("implicit_render_called");
+                    }
+                    // The callback is stored on the widget — find it
+                    const widgets = window.turnstile._widgets || window.turnstile.widgets;
+                    if (widgets) {
+                        Object.values(widgets).forEach(w => {
+                            if (w && typeof w.callback === "function") {
+                                try { w.callback(t); results.push("widget_callback_called"); } catch(e) {}
+                            }
+                        });
+                    }
+                }
+
+                // 3. Find callback registered on the #cf-turnstile container
+                const container = document.querySelector('#cf-turnstile, [class*="turnstile"], [data-sitekey]');
+                if (container) {
+                    const cbName = container.getAttribute("data-callback");
+                    if (cbName && typeof window[cbName] === "function") {
+                        try { window[cbName](t); results.push(`data-callback:${cbName}`); } catch(e) {}
+                    }
+                }
+
+                // 4. Scan window for any function that looks like a turnstile callback
+                // PixAI likely registers something like onTurnstileSuccess or similar
+                const cbKeys = Object.keys(window).filter(k =>
+                    /turnstile|captcha|verify|token|challenge/i.test(k) &&
+                    typeof window[k] === "function"
+                );
+                cbKeys.forEach(k => {
+                    try { window[k](t); results.push(`window.${k}()`); } catch(e) {}
+                });
+
+                return results;
+            }, token);
+
+            log("TURNSTILE", `Injection results: ${JSON.stringify(injected)}`);
+
+            // Give React time to process the state update
+            await delay(1500);
+
+            // Verify the button actually enabled
+            const btnEnabled = await page.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll("button"))
+                    .find(b => /claim/i.test((b.innerText || "").trim()));
+                return btn ? !btn.disabled : false;
+            });
+
+            if (btnEnabled) {
+                log("TURNSTILE", "Claim button enabled after token injection — success!");
+                return true;
+            }
+
+            // Button still disabled — try dispatching a synthetic turnstile callback
+            // by posting a message to the window (some implementations use postMessage)
+            log("TURNSTILE", "Button still disabled — trying postMessage approach...");
+            await page.evaluate((t) => {
+                // Some CF Turnstile integrations listen for postMessage from the iframe
+                window.postMessage({ source: "cloudflare-challenge", token: t }, "*");
+                window.postMessage({ "cf-turnstile-response": t }, "*");
+                // Also try React synthetic event on the input
+                const input = document.querySelector('input[name="cf-turnstile-response"]');
+                if (input) {
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                    nativeInputValueSetter.call(input, t);
+                    input.dispatchEvent(new Event("input",  { bubbles: true }));
+                    input.dispatchEvent(new Event("change", { bubbles: true }));
+                    input.dispatchEvent(new Event("blur",   { bubbles: true }));
                 }
             }, token);
-            log("TURNSTILE", "Token injected via CapSolver.");
+
+            await delay(1500);
+            log("TURNSTILE", "Token injection complete.");
             return true;
         }
         log("TURNSTILE", "CapSolver failed — falling back to mouse click.");
@@ -673,9 +748,9 @@ async function run() {
         // 5. Wait for Claim button to enable
         log("PROCESS", "Waiting for Claim button to enable...");
         try {
-            await waitForClaimButtonEnabled(page, 25000);
+            await waitForClaimButtonEnabled(page, 35000);
         } catch (_) {
-            log("WARN", "Claim button did not enable in 25s — attempting click anyway.");
+            log("WARN", "Claim button did not enable in 35s — attempting click anyway.");
         }
 
         // 6. Click claim
