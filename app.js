@@ -119,6 +119,38 @@ async function getTurnstileHostHandle(page) {
     return verifyRow.asElement() || null;
 }
 
+// Intercept turnstile.render() to capture the callback PixAI registered
+async function interceptTurnstileCallback(page) {
+    await page.evaluateOnNewDocument(() => {
+        window.__turnstileCallbacks = [];
+        // Intercept when CF's turnstile.js calls window.onloadTurnstileCallback
+        // or when PixAI calls turnstile.render({callback: fn})
+        const origDefine = Object.defineProperty.bind(Object);
+        // Proxy window.turnstile once CF sets it
+        let _turnstile = null;
+        origDefine(window, "turnstile", {
+            configurable: true,
+            get() { return _turnstile; },
+            set(val) {
+                _turnstile = val;
+                if (val && typeof val.render === "function") {
+                    const origRender = val.render.bind(val);
+                    val.render = function(container, params) {
+                        if (params && typeof params.callback === "function") {
+                            window.__turnstileCallbacks.push(params.callback);
+                            console.log("[INTERCEPT] turnstile.render callback captured");
+                        }
+                        if (params && typeof params["error-callback"] === "function") {
+                            console.log("[INTERCEPT] error-callback also present");
+                        }
+                        return origRender(container, params);
+                    };
+                }
+            }
+        });
+    });
+}
+
 async function solveWithCapSolver() {
     // Call CapSolver API to get a Turnstile token without any clicking
     if (!CAPSOLVER_KEY) {
@@ -182,40 +214,33 @@ async function solveTurnstile(page) {
     if (CAPSOLVER_KEY) {
         const token = await solveWithCapSolver();
         if (token) {
-            // PixAI uses Cloudflare's turnstile JS which fires a callback when solved.
-            // Simply setting the hidden input value isn't enough — we need to trigger
-            // the same callback that the CF widget fires after a real solve.
+            // Use the intercepted callback from turnstile.render() — this is what
+            // PixAI's React component actually listens to, not DOM events.
             const injected = await page.evaluate((t) => {
                 const results = [];
 
-                // 1. Set the hidden input
+                // 1. BEST: call the captured render callback directly
+                if (window.__turnstileCallbacks && window.__turnstileCallbacks.length > 0) {
+                    window.__turnstileCallbacks.forEach((cb, i) => {
+                        try { cb(t); results.push(`captured_callback_${i}`); } catch(e) {
+                            results.push(`captured_callback_${i}_err:${e.message}`);
+                        }
+                    });
+                }
+
+                // 2. Set the hidden input with React native setter
                 const input = document.querySelector('input[name="cf-turnstile-response"]');
                 if (input) {
                     Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
                         .set.call(input, t);
                     input.dispatchEvent(new Event("input",  { bubbles: true }));
                     input.dispatchEvent(new Event("change", { bubbles: true }));
+                    input.dispatchEvent(new Event("blur",   { bubbles: true }));
                     results.push("input_set");
                 }
 
-                // 2. Call window.turnstile callback directly if available
-                if (window.turnstile) {
-                    if (typeof window.turnstile.implicitRender === "function") {
-                        results.push("implicit_render_called");
-                    }
-                    // The callback is stored on the widget — find it
-                    const widgets = window.turnstile._widgets || window.turnstile.widgets;
-                    if (widgets) {
-                        Object.values(widgets).forEach(w => {
-                            if (w && typeof w.callback === "function") {
-                                try { w.callback(t); results.push("widget_callback_called"); } catch(e) {}
-                            }
-                        });
-                    }
-                }
-
-                // 3. Find callback registered on the #cf-turnstile container
-                const container = document.querySelector('#cf-turnstile, [class*="turnstile"], [data-sitekey]');
+                // 3. data-callback attribute on container
+                const container = document.querySelector('[data-sitekey], #cf-turnstile, [class*="cf-turnstile"]');
                 if (container) {
                     const cbName = container.getAttribute("data-callback");
                     if (cbName && typeof window[cbName] === "function") {
@@ -223,25 +248,32 @@ async function solveTurnstile(page) {
                     }
                 }
 
-                // 4. Scan window for any function that looks like a turnstile callback
-                // PixAI likely registers something like onTurnstileSuccess or similar
-                const cbKeys = Object.keys(window).filter(k =>
-                    /turnstile|captcha|verify|token|challenge/i.test(k) &&
-                    typeof window[k] === "function"
-                );
-                cbKeys.forEach(k => {
-                    try { window[k](t); results.push(`window.${k}()`); } catch(e) {}
-                });
+                // 4. window.turnstile internal state
+                if (window.turnstile) {
+                    // Try _cfChallengeWidgets or similar internal maps
+                    for (const key of ["_widgets", "widgets", "_cfWidgets", "__widgets"]) {
+                        const map = window.turnstile[key];
+                        if (map && typeof map === "object") {
+                            Object.values(map).forEach(w => {
+                                if (w && typeof w.callback === "function") {
+                                    try { w.callback(t); results.push(`turnstile.${key}.callback`); } catch(e) {}
+                                }
+                            });
+                        }
+                    }
+                }
+
+                // 5. postMessage — some integrations use this
+                window.postMessage({ source: "cloudflare-challenge", token: t }, "*");
+                window.postMessage({ "cf-turnstile-response": t }, "*");
+                results.push("postMessage_sent");
 
                 return results;
             }, token);
 
             log("TURNSTILE", `Injection results: ${JSON.stringify(injected)}`);
+            await delay(2000);
 
-            // Give React time to process the state update
-            await delay(1500);
-
-            // Verify the button actually enabled
             const btnEnabled = await page.evaluate(() => {
                 const btn = Array.from(document.querySelectorAll("button"))
                     .find(b => /claim/i.test((b.innerText || "").trim()));
@@ -249,30 +281,13 @@ async function solveTurnstile(page) {
             });
 
             if (btnEnabled) {
-                log("TURNSTILE", "Claim button enabled after token injection — success!");
+                log("TURNSTILE", "Claim button enabled — injection successful!");
                 return true;
             }
 
-            // Button still disabled — try dispatching a synthetic turnstile callback
-            // by posting a message to the window (some implementations use postMessage)
-            log("TURNSTILE", "Button still disabled — trying postMessage approach...");
-            await page.evaluate((t) => {
-                // Some CF Turnstile integrations listen for postMessage from the iframe
-                window.postMessage({ source: "cloudflare-challenge", token: t }, "*");
-                window.postMessage({ "cf-turnstile-response": t }, "*");
-                // Also try React synthetic event on the input
-                const input = document.querySelector('input[name="cf-turnstile-response"]');
-                if (input) {
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                    nativeInputValueSetter.call(input, t);
-                    input.dispatchEvent(new Event("input",  { bubbles: true }));
-                    input.dispatchEvent(new Event("change", { bubbles: true }));
-                    input.dispatchEvent(new Event("blur",   { bubbles: true }));
-                }
-            }, token);
-
-            await delay(1500);
-            log("TURNSTILE", "Token injection complete.");
+            log("TURNSTILE", "Button still disabled after injection — token accepted but callback not found.");
+            // Return true anyway so we attempt the click — the server-side token
+            // may be valid even if the button didn't visually enable
             return true;
         }
         log("TURNSTILE", "CapSolver failed — falling back to mouse click.");
@@ -667,6 +682,7 @@ async function run() {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     );
     await applyStealthPatches(page);
+    await interceptTurnstileCallback(page);
 
     try {
         // 1. Land on base domain, inject saved cookies, then navigate to generator
