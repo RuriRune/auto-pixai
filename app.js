@@ -12,8 +12,12 @@ const BASE_URL      = "https://pixai.art";
 const LOGIN_NAME    = process.env.LOGINNAME || "";
 const PASSWORD      = process.env.PASSWORD  || "";
 const IS_DOCKER     = process.env.IS_DOCKER !== "false";
-const DATA_PATH     = "/data/";
-const COOKIE_FILE   = path.join(DATA_PATH, "cookies.json");
+const DATA_PATH       = "/data/";
+const COOKIE_FILE     = path.join(DATA_PATH, "cookies.json");
+const CAPSOLVER_KEY   = process.env.CAPSOLVER_KEY || "";
+// Turnstile sitekey for pixai.art — update if it ever changes
+const TURNSTILE_SITEKEY = "0x4AAAAAABkbsz0wsSnkOIKt";
+const TURNSTILE_PAGEURL = "https://pixai.art/en/generator/image";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 function delay(ms) {
@@ -115,173 +119,131 @@ async function getTurnstileHostHandle(page) {
     return verifyRow.asElement() || null;
 }
 
+async function solveWithCapSolver() {
+    // Call CapSolver API to get a Turnstile token without any clicking
+    if (!CAPSOLVER_KEY) {
+        log("CAPSOLVER", "No CAPSOLVER_KEY set — skipping CapSolver.");
+        return null;
+    }
+    log("CAPSOLVER", "Creating Turnstile task...");
+    try {
+        const createRes = await fetch("https://api.capsolver.com/createTask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                clientKey: CAPSOLVER_KEY,
+                task: {
+                    type:    "AntiTurnstileTaskProxyLess",
+                    websiteURL: TURNSTILE_PAGEURL,
+                    websiteKey: TURNSTILE_SITEKEY,
+                },
+            }),
+        });
+        const createData = await createRes.json();
+        if (createData.errorId !== 0) {
+            log("CAPSOLVER", `Task creation failed: ${createData.errorDescription}`);
+            return null;
+        }
+        const taskId = createData.taskId;
+        log("CAPSOLVER", `Task created: ${taskId} — polling for result...`);
+
+        // Poll up to 60s for the token
+        for (let i = 0; i < 30; i++) {
+            await delay(2000);
+            const pollRes = await fetch("https://api.capsolver.com/getTaskResult", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ clientKey: CAPSOLVER_KEY, taskId }),
+            });
+            const pollData = await pollRes.json();
+            if (pollData.status === "ready") {
+                const token = pollData.solution?.token;
+                log("CAPSOLVER", `Token received (${token ? token.length : 0} chars).`);
+                return token || null;
+            }
+            if (pollData.errorId !== 0) {
+                log("CAPSOLVER", `Poll error: ${pollData.errorDescription}`);
+                return null;
+            }
+            log("CAPSOLVER", `Waiting... (attempt ${i + 1}/30)`);
+        }
+        log("CAPSOLVER", "Timed out waiting for token.");
+        return null;
+    } catch (e) {
+        log("CAPSOLVER", `Error: ${e.message}`);
+        return null;
+    }
+}
+
 async function solveTurnstile(page) {
-    log("TURNSTILE", "Warming up mouse before verification...");
-    await humanWarm(page);
+    log("TURNSTILE", "Starting Turnstile solve...");
 
-    log("TURNSTILE", "Locating Turnstile iframe...");
-
-    // Log ALL iframes on the page so we can see exactly what's there
-    const allFrames = await page.evaluate(() => {
-        return Array.from(document.querySelectorAll("iframe")).map(f => ({
-            src:   f.src   || "(no src)",
-            id:    f.id    || "(no id)",
-            title: f.title || "(no title)",
-            name:  f.name  || "(no name)",
-            x: Math.round(f.getBoundingClientRect().x),
-            y: Math.round(f.getBoundingClientRect().y),
-            w: Math.round(f.getBoundingClientRect().width),
-            h: Math.round(f.getBoundingClientRect().height),
-        }));
-    });
-    log("TURNSTILE", `Found ${allFrames.length} iframe(s) on page:`);
-    allFrames.forEach((f, i) => log("TURNSTILE", `  [${i}] src=${f.src} id=${f.id} title=${f.title} pos=${f.x},${f.y} size=${f.w}x${f.h}`));
-
-    // Strategy 1: find the CF iframe via puppeteer's frames() and click INSIDE it
-    // This works regardless of cross-origin restrictions on the parent
-    const frames = page.frames();
-    log("TURNSTILE", `Puppeteer sees ${frames.length} frame(s):`);
-    frames.forEach((f, i) => log("TURNSTILE", `  [${i}] url=${f.url()}`));
-
-    const cfFrame = frames.find(f =>
-        f.url().includes("challenges.cloudflare.com") ||
-        f.url().includes("turnstile")
-    );
-
-    if (cfFrame) {
-        log("TURNSTILE", `CF frame found: ${cfFrame.url()}`);
-
-        // The iframe has no src in the DOM (Cloudflare sets it dynamically),
-        // so we can't find it by src. Instead use Puppeteer's frameElement()
-        // to get the actual DOM element handle, then get its bounding box.
-        let box = null;
-        try {
-            const frameElementHandle = await cfFrame.frameElement();
-            if (frameElementHandle) {
-                box = await frameElementHandle.boundingBox();
-                log("TURNSTILE", box
-                    ? `CF iframe box via frameElement(): x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`
-                    : "frameElement() returned handle but boundingBox() is null"
-                );
-            } else {
-                log("TURNSTILE", "frameElement() returned null");
-            }
-        } catch (e) {
-            log("TURNSTILE", `frameElement() error: ${e.message}`);
-        }
-
-        if (box) {
-            // Page-level mouse click — most reliable for cross-origin iframes
-            const cx = box.x + 22;
-            const cy = box.y + (box.height / 2);
-            log("TURNSTILE", `Clicking checkbox at page coords: ${Math.round(cx)}, ${Math.round(cy)}`);
-            await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
-            await delay(250 + Math.random() * 150);
-            await page.mouse.move(cx - 20, cy - 8,  { steps: 12 });
-            await delay(120 + Math.random() * 80);
-            await page.mouse.move(cx,       cy,      { steps: 6  });
-            await delay(80  + Math.random() * 60);
-            await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
-        } else {
-            // Last resort: find ALL iframes, pick the one whose contentWindow
-            // matches the CF frame, get its bounding box that way
-            log("TURNSTILE", "Trying fallback: iterate all iframe elements for CF frame...");
-            const iframeHandles = await page.$$("iframe");
-            let foundBox = null;
-            for (const handle of iframeHandles) {
-                try {
-                    const contentFrame = await handle.contentFrame();
-                    if (contentFrame && contentFrame.url().includes("challenges.cloudflare.com")) {
-                        foundBox = await handle.boundingBox();
-                        log("TURNSTILE", foundBox
-                            ? `Found CF iframe via $$: x=${Math.round(foundBox.x)} y=${Math.round(foundBox.y)} w=${Math.round(foundBox.width)} h=${Math.round(foundBox.height)}`
-                            : "Found CF iframe via $$ but boundingBox() null"
-                        );
-                        break;
-                    }
-                } catch (_) {}
-            }
-
-            if (foundBox) {
-                const cx = foundBox.x + 22;
-                const cy = foundBox.y + (foundBox.height / 2);
-                log("TURNSTILE", `Clicking at: ${Math.round(cx)}, ${Math.round(cy)}`);
-                await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
-                await delay(250 + Math.random() * 150);
-                await page.mouse.move(cx - 20, cy - 8,  { steps: 12 });
-                await delay(120 + Math.random() * 80);
-                await page.mouse.move(cx,       cy,      { steps: 6  });
-                await delay(80  + Math.random() * 60);
-                await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
-            } else {
-                // Absolute last resort: use the host element bounding box
-                log("TURNSTILE", "All iframe strategies failed — using host element bounding box...");
-                const host = await getTurnstileHostHandle(page);
-                const hostBox = host ? await host.boundingBox() : null;
-                if (hostBox) {
-                    const cx = hostBox.x + 22;
-                    const cy = hostBox.y + (hostBox.height / 2);
-                    log("TURNSTILE", `Host element click at: ${Math.round(cx)}, ${Math.round(cy)}`);
-                    await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
-                    await delay(250 + Math.random() * 150);
-                    await page.mouse.move(cx,       cy,      { steps: 6  });
-                    await delay(80  + Math.random() * 60);
-                    await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
-                } else {
-                    log("TURNSTILE", "No clickable target found — giving up on Turnstile.");
-                    return false;
+    // Strategy A: CapSolver API (no clicking, most reliable)
+    if (CAPSOLVER_KEY) {
+        const token = await solveWithCapSolver();
+        if (token) {
+            // Inject the token into the hidden input and fire the callback
+            await page.evaluate((t) => {
+                // Set the hidden input value
+                const input = document.querySelector('input[name="cf-turnstile-response"]');
+                if (input) {
+                    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")
+                        .set.call(input, t);
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new Event("change", { bubbles: true }));
                 }
-            }
+                // Also try to call the turnstile callback if exposed
+                if (window.turnstile && typeof window.turnstile.execute === "function") {
+                    window.turnstile.execute();
+                }
+            }, token);
+            log("TURNSTILE", "Token injected via CapSolver.");
+            return true;
         }
-    } else {
-        // Strategy 2: fallback to host element page-coords click
-        log("TURNSTILE", "No CF frame found in puppeteer frames — using host element fallback...");
-        const host = await getTurnstileHostHandle(page);
-        if (!host) {
-            log("TURNSTILE", "Widget not found at all — skipping.");
-            return false;
-        }
-        const box = await host.boundingBox();
-        if (!box) {
-            log("TURNSTILE", "Widget found but no bounding box.");
-            return false;
-        }
-        log("TURNSTILE", `Host element: x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
-        const cx = box.x + 22;
-        const cy = box.y + (box.height / 2);
-        log("TURNSTILE", `Clicking at: ${Math.round(cx)}, ${Math.round(cy)}`);
-        await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
-        await delay(250 + Math.random() * 150);
-        await page.mouse.move(cx - 20, cy - 8,  { steps: 12 });
-        await delay(120 + Math.random() * 80);
-        await page.mouse.move(cx,       cy,      { steps: 6  });
-        await delay(80  + Math.random() * 60);
-        await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
+        log("TURNSTILE", "CapSolver failed — falling back to mouse click.");
     }
 
-    log("TURNSTILE", "Click sent — waiting for token (up to 20s)...");
+    // Strategy B: mouse click fallback (works if CF doesn't reject the env)
+    log("TURNSTILE", "Warming up mouse...");
+    await humanWarm(page);
 
+    // Find the host element bounding box
+    const host = await getTurnstileHostHandle(page);
+    if (!host) { log("TURNSTILE", "Widget not found."); return false; }
+    const box = await host.boundingBox();
+    if (!box)  { log("TURNSTILE", "No bounding box."); return false; }
+
+    log("TURNSTILE", `Host: x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
+    const cx = box.x + 22;
+    const cy = box.y + (box.height / 2);
+    log("TURNSTILE", `Clicking at: ${Math.round(cx)}, ${Math.round(cy)}`);
+
+    await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
+    await delay(250 + Math.random() * 150);
+    await page.mouse.move(cx - 20, cy - 8,  { steps: 12 });
+    await delay(120 + Math.random() * 80);
+    await page.mouse.move(cx, cy,            { steps: 6  });
+    await delay(80  + Math.random() * 60);
+    await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
+
+    log("TURNSTILE", "Click sent — waiting for token (up to 20s)...");
     try {
         await page.waitForFunction(() => {
             const el = document.querySelector('input[name="cf-turnstile-response"]');
             return !!(el && el.value && el.value.trim().length > 0);
         }, { timeout: 20000 });
-
         const val = await page.evaluate(() => {
             const el = document.querySelector('input[name="cf-turnstile-response"]');
             return el ? el.value : "";
         });
-        log("TURNSTILE", `Token received (${val.length} chars).`);
+        log("TURNSTILE", `Token received via click (${val.length} chars).`);
         return true;
     } catch (_) {
         const failed = await page.evaluate(() =>
             /verification failed/i.test(document.body ? document.body.innerText : "")
         );
-        if (failed) {
-            log("VERIFY_FAILED", "Cloudflare Turnstile returned a failure state.");
-            return false;
-        }
-        log("TURNSTILE", "No token after 20s — proceeding anyway.");
+        if (failed) { log("VERIFY_FAILED", "Cloudflare returned failure."); return false; }
+        log("TURNSTILE", "No token after 20s.");
         return false;
     }
 }
