@@ -119,36 +119,72 @@ async function solveTurnstile(page) {
     log("TURNSTILE", "Warming up mouse before verification...");
     await humanWarm(page);
 
-    // The Turnstile widget renders inside a cross-origin iframe.
-    // We need to find that iframe, get its position, then click the
-    // checkbox which sits at roughly x+20, y+centre within the iframe.
     log("TURNSTILE", "Locating Turnstile iframe...");
 
-    // First try: find the iframe by known Cloudflare src patterns
-    const iframeBox = await page.evaluate(() => {
-        const frames = Array.from(document.querySelectorAll("iframe"));
-        const cf = frames.find(f =>
-            (f.src || "").includes("challenges.cloudflare.com") ||
-            (f.src || "").includes("turnstile") ||
-            (f.title || "").toLowerCase().includes("cloudflare") ||
-            (f.title || "").toLowerCase().includes("turnstile") ||
-            (f.id   || "").toLowerCase().includes("turnstile")
-        );
-        if (!cf) return null;
-        const r = cf.getBoundingClientRect();
-        return { x: r.x, y: r.y, width: r.width, height: r.height, src: cf.src };
+    // Log ALL iframes on the page so we can see exactly what's there
+    const allFrames = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll("iframe")).map(f => ({
+            src:   f.src   || "(no src)",
+            id:    f.id    || "(no id)",
+            title: f.title || "(no title)",
+            name:  f.name  || "(no name)",
+            x: Math.round(f.getBoundingClientRect().x),
+            y: Math.round(f.getBoundingClientRect().y),
+            w: Math.round(f.getBoundingClientRect().width),
+            h: Math.round(f.getBoundingClientRect().height),
+        }));
     });
+    log("TURNSTILE", `Found ${allFrames.length} iframe(s) on page:`);
+    allFrames.forEach((f, i) => log("TURNSTILE", `  [${i}] src=${f.src} id=${f.id} title=${f.title} pos=${f.x},${f.y} size=${f.w}x${f.h}`));
 
-    let checkboxX, checkboxY;
+    // Strategy 1: find the CF iframe via puppeteer's frames() and click INSIDE it
+    // This works regardless of cross-origin restrictions on the parent
+    const frames = page.frames();
+    log("TURNSTILE", `Puppeteer sees ${frames.length} frame(s):`);
+    frames.forEach((f, i) => log("TURNSTILE", `  [${i}] url=${f.url()}`));
 
-    if (iframeBox) {
-        log("TURNSTILE", `Iframe found: x=${Math.round(iframeBox.x)} y=${Math.round(iframeBox.y)} w=${Math.round(iframeBox.width)} h=${Math.round(iframeBox.height)}`);
-        // Checkbox is on the left side of the iframe, vertically centred
-        checkboxX = iframeBox.x + 20;
-        checkboxY = iframeBox.y + (iframeBox.height / 2);
+    const cfFrame = frames.find(f =>
+        f.url().includes("challenges.cloudflare.com") ||
+        f.url().includes("turnstile")
+    );
+
+    if (cfFrame) {
+        log("TURNSTILE", `CF frame found: ${cfFrame.url()}`);
+
+        // Get the iframe element handle to find its page-level bounding box
+        const iframeEl = await page.evaluateHandle(() => {
+            return Array.from(document.querySelectorAll("iframe")).find(f =>
+                (f.src || "").includes("challenges.cloudflare.com") ||
+                (f.src || "").includes("turnstile")
+            ) || null;
+        });
+        const iframeElEl = iframeEl.asElement();
+        const box = iframeElEl ? await iframeElEl.boundingBox() : null;
+
+        if (box) {
+            log("TURNSTILE", `CF iframe box: x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
+            // Click the checkbox — it's at ~x+22, vertically centred in the iframe
+            const cx = box.x + 22;
+            const cy = box.y + (box.height / 2);
+            log("TURNSTILE", `Clicking at page coords: ${Math.round(cx)}, ${Math.round(cy)}`);
+            await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
+            await delay(250 + Math.random() * 150);
+            await page.mouse.move(cx - 20, cy - 8,  { steps: 12 });
+            await delay(120 + Math.random() * 80);
+            await page.mouse.move(cx,       cy,      { steps: 6  });
+            await delay(80  + Math.random() * 60);
+            await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
+        } else {
+            // No bounding box — click inside the frame's coordinate space directly
+            log("TURNSTILE", "No bounding box for CF iframe — clicking inside frame at (22, 32)");
+            await cfFrame.evaluate(() => {
+                const cb = document.querySelector("input[type='checkbox']");
+                if (cb) cb.click();
+            });
+        }
     } else {
-        // Fallback: use the host element bounding box approach
-        log("TURNSTILE", "Iframe not found by src — falling back to host element...");
+        // Strategy 2: fallback to host element page-coords click
+        log("TURNSTILE", "No CF frame found in puppeteer frames — using host element fallback...");
         const host = await getTurnstileHostHandle(page);
         if (!host) {
             log("TURNSTILE", "Widget not found at all — skipping.");
@@ -160,20 +196,17 @@ async function solveTurnstile(page) {
             return false;
         }
         log("TURNSTILE", `Host element: x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
-        checkboxX = box.x + 20;
-        checkboxY = box.y + (box.height / 2);
+        const cx = box.x + 22;
+        const cy = box.y + (box.height / 2);
+        log("TURNSTILE", `Clicking at: ${Math.round(cx)}, ${Math.round(cy)}`);
+        await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
+        await delay(250 + Math.random() * 150);
+        await page.mouse.move(cx - 20, cy - 8,  { steps: 12 });
+        await delay(120 + Math.random() * 80);
+        await page.mouse.move(cx,       cy,      { steps: 6  });
+        await delay(80  + Math.random() * 60);
+        await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
     }
-
-    log("TURNSTILE", `Checkbox target: x=${Math.round(checkboxX)} y=${Math.round(checkboxY)}`);
-
-    // Human-like approach: move in from above-left, pause, then click
-    await page.mouse.move(checkboxX - 80, checkboxY - 40, { steps: 20 });
-    await delay(300 + Math.random() * 200);
-    await page.mouse.move(checkboxX - 30, checkboxY - 10, { steps: 15 });
-    await delay(150 + Math.random() * 100);
-    await page.mouse.move(checkboxX,       checkboxY,     { steps: 8  });
-    await delay(100 + Math.random() * 80);
-    await page.mouse.click(checkboxX, checkboxY, { delay: 60 + Math.random() * 80 });
 
     log("TURNSTILE", "Click sent — waiting for token (up to 20s)...");
 
