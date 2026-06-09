@@ -270,26 +270,43 @@ async function solveTurnstile(page) {
     await delay(80  + Math.random() * 60);
     await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
 
-    log("TURNSTILE", "Click sent — waiting for token (up to 20s)...");
-    try {
-        await page.waitForFunction(() => {
-            const el = document.querySelector('input[name="cf-turnstile-response"]');
-            return !!(el && el.value && el.value.trim().length > 0);
-        }, { timeout: 20000 });
-        const val = await page.evaluate(() => {
-            const el = document.querySelector('input[name="cf-turnstile-response"]');
-            return el ? el.value : "";
-        });
-        log("TURNSTILE", `Token received via click (${val.length} chars).`);
-        return true;
-    } catch (_) {
-        const failed = await page.evaluate(() =>
-            /verification failed/i.test(document.body ? document.body.innerText : "")
-        );
-        if (failed) { log("VERIFY_FAILED", "Cloudflare returned failure."); return false; }
-        log("TURNSTILE", "No token after 20s.");
-        return false;
+    // Wait up to 60s for Cloudflare to auto-complete — with a persistent
+    // profile it should verify automatically without needing a click at all.
+    // Retry the click every 15s if no token yet.
+    log("TURNSTILE", "Waiting for Cloudflare to auto-verify (up to 60s)...");
+    for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+            await page.waitForFunction(() => {
+                const el = document.querySelector('input[name="cf-turnstile-response"]');
+                return !!(el && el.value && el.value.trim().length > 0);
+            }, { timeout: 15000 });
+            const val = await page.evaluate(() => {
+                const el = document.querySelector('input[name="cf-turnstile-response"]');
+                return el ? el.value : "";
+            });
+            log("TURNSTILE", `Token received on attempt ${attempt} (${val.length} chars).`);
+            return true;
+        } catch (_) {
+            const failed = await page.evaluate(() =>
+                /verification failed/i.test(document.body ? document.body.innerText : "")
+            );
+            if (failed) { log("VERIFY_FAILED", "Cloudflare returned failure."); return false; }
+
+            if (attempt < 4) {
+                log("TURNSTILE", `No token after 15s (attempt ${attempt}/4) — retrying click...`);
+                // Re-click the checkbox
+                const host = await getTurnstileHostHandle(page);
+                const box = host ? await host.boundingBox() : null;
+                if (box) {
+                    const cx = box.x + 22;
+                    const cy = box.y + (box.height / 2);
+                    await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
+                }
+            }
+        }
     }
+    log("TURNSTILE", "No token after 60s total.");
+    return false;
 }
 
 // ─── Auth helpers ──────────────────────────────────────────────────────────
@@ -601,10 +618,12 @@ async function clickClaimButton(page) {
 async function run() {
     log("INFO", "Starting PixAI Auto-Claimer");
 
-    // Use Xvfb virtual display in Docker so Chrome runs non-headless.
-    // Cloudflare Turnstile rejects true headless environments — a virtual
-    // display makes Chrome behave identically to a real desktop session.
     const displayNum = process.env.DISPLAY || ":99";
+    // Persistent profile dir — Cloudflare scores browsers with history/cookies
+    // much higher than fresh profiles. Reusing the same profile across runs
+    // builds up a trust score over time.
+    const PROFILE_DIR = "/data/chrome-profile";
+
     const chromeArgs = [
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -612,10 +631,11 @@ async function run() {
         "--window-size=1280,1024",
         "--disable-web-security",
         "--disable-features=IsolateOrigins,site-per-process",
-        // GPU flags for Xvfb — software rendering, no actual GPU needed
         "--disable-gpu",
         "--use-gl=swiftshader",
         "--use-angle=swiftshader",
+        `--user-data-dir=${PROFILE_DIR}`,
+        "--profile-directory=Default",
     ];
 
     if (IS_DOCKER) {
@@ -623,7 +643,7 @@ async function run() {
     }
 
     const browser = await puppeteer.launch({
-        headless: false,           // non-headless so Cloudflare sees a real browser
+        headless: false,
         executablePath: IS_DOCKER ? "/usr/bin/google-chrome" : undefined,
         args: chromeArgs,
         env: IS_DOCKER ? { ...process.env, DISPLAY: displayNum } : process.env,
@@ -705,31 +725,12 @@ async function run() {
             return;
         }
 
-        // 4. Solve Turnstile + attempt claim
+        // 4. Solve Turnstile
         log("PROCESS", "Solving Cloudflare Turnstile...");
-        const turnstileOk = await solveTurnstile(page);
+        await solveTurnstile(page);
         await delay(800);
 
-        // Check if CapSolver already claimed via direct API (logged "Claim Status: SUCCESS" internally)
-        // solveTurnstile returns true if API claim succeeded
-        if (turnstileOk) {
-            // Check if the API path already handled the claim
-            const alreadyDone = await page.evaluate(() => {
-                // If credits changed or modal is gone, claim went through
-                return !document.body.innerText.includes("Verify you are human");
-            });
-
-            if (alreadyDone) {
-                log("CLAIM", "Claim Status: SUCCESS");
-                await delay(1000);
-                await page.screenshot({ path: `${DATA_PATH}2_after_claim.png` });
-                const freshCookies = await page.cookies();
-                saveCookies(freshCookies);
-                return;
-            }
-        }
-
-        // 5. Wait for Claim button to enable (fallback path)
+        // 5. Wait for Claim button to enable
         log("PROCESS", "Waiting for Claim button to enable...");
         try {
             await waitForClaimButtonEnabled(page, 35000);
