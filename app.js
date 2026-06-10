@@ -14,10 +14,7 @@ const PASSWORD      = process.env.PASSWORD  || "";
 const IS_DOCKER     = process.env.IS_DOCKER !== "false";
 const DATA_PATH       = "/data/";
 const COOKIE_FILE     = path.join(DATA_PATH, "cookies.json");
-const CAPSOLVER_KEY   = process.env.CAPSOLVER_KEY || "";
-// Turnstile sitekey for pixai.art — update if it ever changes
-const TURNSTILE_SITEKEY = "0x4AAAAAABkbsz0wsSnkOIKt";
-const TURNSTILE_PAGEURL = "https://pixai.art/en/generator/image";
+
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 function delay(ms) {
@@ -119,148 +116,20 @@ async function getTurnstileHostHandle(page) {
     return verifyRow.asElement() || null;
 }
 
-async function solveWithCapSolver() {
-    // Call CapSolver API to get a Turnstile token without any clicking
-    if (!CAPSOLVER_KEY) {
-        log("CAPSOLVER", "No CAPSOLVER_KEY set — skipping CapSolver.");
-        return null;
-    }
-    log("CAPSOLVER", "Creating Turnstile task...");
-    try {
-        const createRes = await fetch("https://api.capsolver.com/createTask", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                clientKey: CAPSOLVER_KEY,
-                task: {
-                    type:    "AntiTurnstileTaskProxyLess",
-                    websiteURL: TURNSTILE_PAGEURL,
-                    websiteKey: TURNSTILE_SITEKEY,
-                },
-            }),
-        });
-        const createData = await createRes.json();
-        if (createData.errorId !== 0) {
-            log("CAPSOLVER", `Task creation failed: ${createData.errorDescription}`);
-            return null;
-        }
-        const taskId = createData.taskId;
-        log("CAPSOLVER", `Task created: ${taskId} — polling for result...`);
-
-        // Poll up to 60s for the token
-        for (let i = 0; i < 30; i++) {
-            await delay(2000);
-            const pollRes = await fetch("https://api.capsolver.com/getTaskResult", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ clientKey: CAPSOLVER_KEY, taskId }),
-            });
-            const pollData = await pollRes.json();
-            if (pollData.status === "ready") {
-                const token = pollData.solution?.token;
-                log("CAPSOLVER", `Token received (${token ? token.length : 0} chars).`);
-                return token || null;
-            }
-            if (pollData.errorId !== 0) {
-                log("CAPSOLVER", `Poll error: ${pollData.errorDescription}`);
-                return null;
-            }
-            log("CAPSOLVER", `Waiting... (attempt ${i + 1}/30)`);
-        }
-        log("CAPSOLVER", "Timed out waiting for token.");
-        return null;
-    } catch (e) {
-        log("CAPSOLVER", `Error: ${e.message}`);
-        return null;
-    }
-}
-
 async function solveTurnstile(page) {
-    log("TURNSTILE", "Starting Turnstile solve...");
-
-    // Strategy A: CapSolver API (no clicking, most reliable)
-    if (CAPSOLVER_KEY) {
-        const token = await solveWithCapSolver();
-        if (token) {
-            // Use the token to call PixAI's claim API directly via fetch()
-            // inside the browser context — this uses the authenticated session
-            // cookies automatically and bypasses the frontend React state entirely.
-            log("TURNSTILE", "Attempting direct API claim with token...");
-            const apiResult = await page.evaluate(async (t) => {
-                try {
-                    // First get the user token from PixAI's own API
-                    const meRes = await fetch("https://api.pixai.art/graphql", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        credentials: "include",
-                        body: JSON.stringify({
-                            query: `query { me { id } }`
-                        })
-                    });
-                    const meData = await meRes.json();
-                    const userId = meData?.data?.me?.id;
-
-                    // Call the daily claim mutation with the turnstile token
-                    const claimRes = await fetch("https://api.pixai.art/graphql", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        credentials: "include",
-                        body: JSON.stringify({
-                            query: `mutation ClaimDailyReward($token: String!) {
-                                claimDailyReward(turnstileToken: $token) {
-                                    id
-                                    amount
-                                }
-                            }`,
-                            variables: { token: t }
-                        })
-                    });
-                    const claimData = await claimRes.json();
-                    return { ok: true, userId, claimData };
-                } catch(e) {
-                    return { ok: false, error: e.message };
-                }
-            }, token);
-
-            log("TURNSTILE", `API claim result: ${JSON.stringify(apiResult)}`);
-
-            if (apiResult?.claimData?.data?.claimDailyReward) {
-                const reward = apiResult.claimData.data.claimDailyReward;
-                log("CLAIM", `Claim Status: SUCCESS (amount: ${reward.amount})`);
-                return true;
-            }
-
-            if (apiResult?.claimData?.errors) {
-                const err = apiResult.claimData.errors[0]?.message || "unknown";
-                log("TURNSTILE", `API claim error: ${err}`);
-                // Check if already claimed
-                if (/already|claimed/i.test(err)) {
-                    log("INFO", "already claimed today via API check.");
-                    return true;
-                }
-            }
-
-            // API approach failed — fall through to button click fallback
-            log("TURNSTILE", "Direct API claim failed — will try button click.");
-            return false;
-        }
-        log("TURNSTILE", "CapSolver failed — falling back to mouse click.");
-    }
-
-    // Strategy B: mouse click fallback (works if CF doesn't reject the env)
     log("TURNSTILE", "Warming up mouse...");
     await humanWarm(page);
 
-    // Find the host element bounding box
+    // Find the Turnstile widget and click the checkbox
     const host = await getTurnstileHostHandle(page);
     if (!host) { log("TURNSTILE", "Widget not found."); return false; }
     const box = await host.boundingBox();
     if (!box)  { log("TURNSTILE", "No bounding box."); return false; }
 
-    log("TURNSTILE", `Host: x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
+    log("TURNSTILE", `Widget: x=${Math.round(box.x)} y=${Math.round(box.y)} w=${Math.round(box.width)} h=${Math.round(box.height)}`);
     const cx = box.x + 22;
     const cy = box.y + (box.height / 2);
-    log("TURNSTILE", `Clicking at: ${Math.round(cx)}, ${Math.round(cy)}`);
+    log("TURNSTILE", `Clicking checkbox at: ${Math.round(cx)}, ${Math.round(cy)}`);
 
     await page.mouse.move(cx - 60, cy - 30, { steps: 18 });
     await delay(250 + Math.random() * 150);
@@ -270,49 +139,45 @@ async function solveTurnstile(page) {
     await delay(80  + Math.random() * 60);
     await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
 
-    // Wait up to 90s for Cloudflare to complete.
-    // Success = either hidden input token appears OR claim button enables.
-    // Re-click every 20s if still waiting.
+    // Poll up to 90s — success when token appears OR claim button enables.
+    // Re-click every 20s if still verifying.
     log("TURNSTILE", "Waiting for Cloudflare to verify (up to 90s)...");
-
-    const startTime = Date.now();
-    const maxWait  = 90000;
+    const startTime  = Date.now();
+    const maxWait    = 90000;
     const retryEvery = 20000;
-    let lastClick = Date.now();
+    let lastClick    = Date.now();
 
     while (Date.now() - startTime < maxWait) {
-        // Check for success: token in hidden input OR claim button enabled
         const done = await page.evaluate(() => {
             const input = document.querySelector('input[name="cf-turnstile-response"]');
-            const hasToken = !!(input && input.value && input.value.trim().length > 0);
-            const btn = Array.from(document.querySelectorAll("button"))
+            const hasToken  = !!(input && input.value && input.value.trim().length > 0);
+            const btn       = Array.from(document.querySelectorAll("button"))
                 .find(b => /claim/i.test((b.innerText || "").trim()));
             const btnEnabled = !!(btn && !btn.disabled);
             return { hasToken, btnEnabled };
         });
 
         if (done.hasToken || done.btnEnabled) {
-            log("TURNSTILE", `Cloudflare verified! hasToken=${done.hasToken} btnEnabled=${done.btnEnabled}`);
+            log("TURNSTILE", `Verified! hasToken=${done.hasToken} btnEnabled=${done.btnEnabled}`);
             return true;
         }
 
-        // Check for hard failure
         const failed = await page.evaluate(() =>
             /verification failed/i.test(document.body ? document.body.innerText : "")
         );
         if (failed) { log("VERIFY_FAILED", "Cloudflare returned failure."); return false; }
 
-        // Re-click if enough time has passed
         if (Date.now() - lastClick > retryEvery) {
-            log("TURNSTILE", `Still verifying after ${Math.round((Date.now()-startTime)/1000)}s — re-clicking...`);
-            const host = await getTurnstileHostHandle(page);
-            const box  = host ? await host.boundingBox() : null;
-            if (box) {
-                const cx = box.x + 22;
-                const cy = box.y + (box.height / 2);
-                await page.mouse.move(cx - 20, cy - 10, { steps: 10 });
+            const elapsed = Math.round((Date.now() - startTime) / 1000);
+            log("TURNSTILE", `Still verifying after ${elapsed}s — re-clicking...`);
+            const h2  = await getTurnstileHostHandle(page);
+            const b2  = h2 ? await h2.boundingBox() : null;
+            if (b2) {
+                const rx = b2.x + 22;
+                const ry = b2.y + (b2.height / 2);
+                await page.mouse.move(rx - 20, ry - 10, { steps: 10 });
                 await delay(100);
-                await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
+                await page.mouse.click(rx, ry, { delay: 60 + Math.random() * 60 });
                 lastClick = Date.now();
             }
         }
@@ -323,6 +188,7 @@ async function solveTurnstile(page) {
     log("TURNSTILE", "No verification after 90s.");
     return false;
 }
+
 
 // ─── Auth helpers ──────────────────────────────────────────────────────────
 async function isLoggedIn(page) {
