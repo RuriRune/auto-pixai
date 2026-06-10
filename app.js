@@ -139,19 +139,16 @@ async function solveTurnstile(page) {
     await delay(80  + Math.random() * 60);
     await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
 
-    // Poll up to 90s — success when token appears OR claim button enables.
-    // Re-click every 20s if still verifying.
-    log("TURNSTILE", "Waiting for Cloudflare to verify (up to 90s)...");
-    const startTime  = Date.now();
-    const maxWait    = 90000;
-    const retryEvery = 20000;
-    let lastClick    = Date.now();
+    // Click ONCE then wait — re-clicking resets the verification.
+    log("TURNSTILE", "Waiting for Cloudflare to verify (up to 3 min, single click only)...");
+    const startTime = Date.now();
+    const maxWait   = 180000;
 
     while (Date.now() - startTime < maxWait) {
         const done = await page.evaluate(() => {
             const input = document.querySelector('input[name="cf-turnstile-response"]');
-            const hasToken  = !!(input && input.value && input.value.trim().length > 0);
-            const btn       = Array.from(document.querySelectorAll("button"))
+            const hasToken   = !!(input && input.value && input.value.trim().length > 0);
+            const btn        = Array.from(document.querySelectorAll("button"))
                 .find(b => /claim/i.test((b.innerText || "").trim()));
             const btnEnabled = !!(btn && !btn.disabled);
             return { hasToken, btnEnabled };
@@ -167,25 +164,15 @@ async function solveTurnstile(page) {
         );
         if (failed) { log("VERIFY_FAILED", "Cloudflare returned failure."); return false; }
 
-        if (Date.now() - lastClick > retryEvery) {
-            const elapsed = Math.round((Date.now() - startTime) / 1000);
-            log("TURNSTILE", `Still verifying after ${elapsed}s — re-clicking...`);
-            const h2  = await getTurnstileHostHandle(page);
-            const b2  = h2 ? await h2.boundingBox() : null;
-            if (b2) {
-                const rx = b2.x + 22;
-                const ry = b2.y + (b2.height / 2);
-                await page.mouse.move(rx - 20, ry - 10, { steps: 10 });
-                await delay(100);
-                await page.mouse.click(rx, ry, { delay: 60 + Math.random() * 60 });
-                lastClick = Date.now();
-            }
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        if (elapsed % 30 === 0 && elapsed > 0) {
+            log("TURNSTILE", `Still waiting... ${elapsed}s elapsed`);
         }
 
         await delay(1000);
     }
 
-    log("TURNSTILE", "No verification after 90s.");
+    log("TURNSTILE", "No verification after 3 minutes.");
     return false;
 }
 
@@ -521,11 +508,16 @@ async function run() {
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
         "--window-size=1280,1024",
-        "--disable-web-security",
         "--disable-features=IsolateOrigins,site-per-process",
-        "--disable-gpu",
+        // Better WebGL/Canvas support for Cloudflare fingerprinting
+        "--enable-webgl",
+        "--enable-webgl2",
+        "--ignore-gpu-blocklist",
         "--use-gl=swiftshader",
-        "--use-angle=swiftshader",
+        "--use-angle=swiftshader-webgl",
+        "--enable-accelerated-2d-canvas",
+        "--enable-canvas-2d-dynamic-rendering-mode-switching",
+        "--font-render-hinting=medium",
         `--user-data-dir=${PROFILE_DIR}`,
         "--profile-directory=Default",
     ];
