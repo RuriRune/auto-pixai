@@ -270,42 +270,57 @@ async function solveTurnstile(page) {
     await delay(80  + Math.random() * 60);
     await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
 
-    // Wait up to 60s for Cloudflare to auto-complete — with a persistent
-    // profile it should verify automatically without needing a click at all.
-    // Retry the click every 15s if no token yet.
-    log("TURNSTILE", "Waiting for Cloudflare to auto-verify (up to 60s)...");
-    for (let attempt = 1; attempt <= 4; attempt++) {
-        try {
-            await page.waitForFunction(() => {
-                const el = document.querySelector('input[name="cf-turnstile-response"]');
-                return !!(el && el.value && el.value.trim().length > 0);
-            }, { timeout: 15000 });
-            const val = await page.evaluate(() => {
-                const el = document.querySelector('input[name="cf-turnstile-response"]');
-                return el ? el.value : "";
-            });
-            log("TURNSTILE", `Token received on attempt ${attempt} (${val.length} chars).`);
-            return true;
-        } catch (_) {
-            const failed = await page.evaluate(() =>
-                /verification failed/i.test(document.body ? document.body.innerText : "")
-            );
-            if (failed) { log("VERIFY_FAILED", "Cloudflare returned failure."); return false; }
+    // Wait up to 90s for Cloudflare to complete.
+    // Success = either hidden input token appears OR claim button enables.
+    // Re-click every 20s if still waiting.
+    log("TURNSTILE", "Waiting for Cloudflare to verify (up to 90s)...");
 
-            if (attempt < 4) {
-                log("TURNSTILE", `No token after 15s (attempt ${attempt}/4) — retrying click...`);
-                // Re-click the checkbox
-                const host = await getTurnstileHostHandle(page);
-                const box = host ? await host.boundingBox() : null;
-                if (box) {
-                    const cx = box.x + 22;
-                    const cy = box.y + (box.height / 2);
-                    await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
-                }
+    const startTime = Date.now();
+    const maxWait  = 90000;
+    const retryEvery = 20000;
+    let lastClick = Date.now();
+
+    while (Date.now() - startTime < maxWait) {
+        // Check for success: token in hidden input OR claim button enabled
+        const done = await page.evaluate(() => {
+            const input = document.querySelector('input[name="cf-turnstile-response"]');
+            const hasToken = !!(input && input.value && input.value.trim().length > 0);
+            const btn = Array.from(document.querySelectorAll("button"))
+                .find(b => /claim/i.test((b.innerText || "").trim()));
+            const btnEnabled = !!(btn && !btn.disabled);
+            return { hasToken, btnEnabled };
+        });
+
+        if (done.hasToken || done.btnEnabled) {
+            log("TURNSTILE", `Cloudflare verified! hasToken=${done.hasToken} btnEnabled=${done.btnEnabled}`);
+            return true;
+        }
+
+        // Check for hard failure
+        const failed = await page.evaluate(() =>
+            /verification failed/i.test(document.body ? document.body.innerText : "")
+        );
+        if (failed) { log("VERIFY_FAILED", "Cloudflare returned failure."); return false; }
+
+        // Re-click if enough time has passed
+        if (Date.now() - lastClick > retryEvery) {
+            log("TURNSTILE", `Still verifying after ${Math.round((Date.now()-startTime)/1000)}s — re-clicking...`);
+            const host = await getTurnstileHostHandle(page);
+            const box  = host ? await host.boundingBox() : null;
+            if (box) {
+                const cx = box.x + 22;
+                const cy = box.y + (box.height / 2);
+                await page.mouse.move(cx - 20, cy - 10, { steps: 10 });
+                await delay(100);
+                await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 60 });
+                lastClick = Date.now();
             }
         }
+
+        await delay(1000);
     }
-    log("TURNSTILE", "No token after 60s total.");
+
+    log("TURNSTILE", "No verification after 90s.");
     return false;
 }
 
@@ -619,10 +634,21 @@ async function run() {
     log("INFO", "Starting PixAI Auto-Claimer");
 
     const displayNum = process.env.DISPLAY || ":99";
-    // Persistent profile dir — Cloudflare scores browsers with history/cookies
-    // much higher than fresh profiles. Reusing the same profile across runs
-    // builds up a trust score over time.
     const PROFILE_DIR = "/data/chrome-profile";
+
+    // Clean up Chrome lock files from previous runs — these cause frame detach crashes
+    try {
+        const lockFiles = ["SingletonLock", "SingletonCookie", "SingletonSocket"];
+        for (const lf of lockFiles) {
+            const p = `${PROFILE_DIR}/${lf}`;
+            if (fs.existsSync(p)) {
+                fs.unlinkSync(p);
+                log("INFO", `Removed stale lock file: ${lf}`);
+            }
+        }
+    } catch (e) {
+        log("INFO", `Lock cleanup: ${e.message}`);
+    }
 
     const chromeArgs = [
         "--no-sandbox",
