@@ -1,109 +1,36 @@
-<h1 align="center">
-    <img width="120" height="120" src="public/pic/logo.png" alt=""><br>
-    auto-pixai
-</h1>
+# Auto-Pixai
 
-<p align="center">
-    <a href="https://github.com/RuriRune/auto-pixai/blob/main/LICENSE"><img src="https://img.shields.io/github/license/RuriRune/auto-pixai?style=flat-square"></a>
-    <a href="https://github.com/RuriRune/auto-pixai"><img src="https://img.shields.io/github/stars/RuriRune/auto-pixai?style=flat-square"></a>
-    <a href="https://github.com/RuriRune/auto-pixai/pkgs/container/auto-pixai"><img src="https://img.shields.io/badge/version-2.1.0-orange?style=flat-square"></a>
-</p>
+Rebuilt from the original [Mr-Smilin/Auto-Pixai](https://github.com/Mr-Smilin/Auto-Pixai), with:
 
-<p align="center">
-Automatically claim daily rewards on pixai.art using Puppeteer Stealth and JSON session injection.
-</p>
+- **Cookie persistence** — session cookies saved to `/data/cookies.json`, loaded on
+  every run, and re-saved after every run (success or not) so they stay fresh and
+  logins are skipped whenever possible.
+- **Turnstile handling** — no external solving service. Detects the Cloudflare
+  Turnstile iframe, gives it time to self-solve, and clicks the checkbox once if
+  it hasn't. This matches how the widget behaves in a real browser.
+- **Headless-first, visible-mode fallback** — tries headless Chrome first, and
+  only spins up the Xvfb-backed visible browser if the headless attempt errors
+  out or Turnstile never clears. Set `FORCE_HEADLESS=true` or `=false` in `.env`
+  to pin one mode.
+- **Debug screenshots** — written to `/data/` at each key step (before/after
+  claim, and on any failure) so issues can be diagnosed without guessing.
+- **Text-based button matching** instead of fixed CSS paths, since pixai.art's
+  DOM/class names change over time and fixed selectors are the first thing to
+  break.
 
----
+## Setup
 
-## 📢 Credits & Modifications
-This is an English-localised fork of the original [auto-pixai](https://github.com/Mr-Smilin/auto-pixai) project by **Mr-Smilin**.
+1. Copy `.env.example` to `.env` and fill in `LOGINNAME` / `PASSWORD`.
+2. `docker build -t auto-pixai .`
+3. Run with `/data` mounted to a persistent volume (for cookies + screenshots), e.g.:
+   ```
+   docker run --env-file .env -v /mnt/user/appdata/auto-pixai:/data auto-pixai
+   ```
+4. Schedule it daily (cron / Unraid User Scripts / docker-compose + ofelia, etc).
 
-### Key Enhancements
-- **Full English Support**  
-  Logs and error messages translated for easier troubleshooting.
+## If a step stops matching the site
 
-- **JSON Cookie Injection**  
-  Supports `cookies.json` to bypass login screens and maintain sessions.
-
-- **Cloudflare / Turnstile Aware**  
-  Detects and interacts with “Verify you are human” challenges.
-
-- **Headless Optimised**  
-  Tuned for Docker environments with anti-detection flags.
-
----
-
-## 🚀 Getting Started
-
-### 1. Prepare Your Cookies
-This script uses your browser session to bypass 2FA and login hurdles.
-
-1. Log in to https://pixai.art  
-2. Use a browser extension (e.g. Cookie-Editor) to export cookies in JSON format  
-3. Save the file as `cookies.json`
-
----
-
-### 2. File Placement
-
-The container requires a volume mounted to `/data`.
-
-#### Expected Structure
-```text
-your-local-folder/
-└── cookies.json
-```
-
----
-
-## 🐳 Deployment
-
-Ensure your volume path points to the folder containing `cookies.json`.
-
-### Docker Compose (Recommended)
-```yaml
-services:
-  pixai-claimer:
-    image: ghcr.io/rurirune/auto-pixai:latest
-    container_name: auto-pixai
-    volumes:
-      - /path/to/your-local-folder:/data
-    environment:
-      - IS_DOCKER=true
-      - TZ=UTC
-    restart: unless-stopped
-```
-
----
-
-## 🛠 Troubleshooting
-
-### Log Indicators
-- `[INFO] Injected X cookies`  
-  Cookies detected and loaded successfully
-
-- `[AUTH] Turnstile click sent`  
-  Cloudflare verification handled
-
-- `[RESULT] Claim Status: SUCCESS`  
-  Credits successfully claimed
-
----
-
-### Common Issues
-
-**Session Expired**  
-If you appear as a guest, your cookies have expired. Export a fresh `cookies.json`.
-
-**Debug Screenshots**  
-Check your mounted folder for:
-- `1_before_claim.png`
-- `2_after_claim.png`
-
-These show exactly what the bot sees.
-
----
-
-## ⚖️ License
-
-Distributed under the MIT License. See `LICENSE` for more information.
+Check the relevant screenshot in `/data/` (e.g. `login_fail_*.png`,
+`2_turnstile_unresolved.png`, `2_after_claim.png`) and the console log — both
+point at exactly which step failed, so a fix is usually a small selector/text
+tweak in `app.js` rather than a rewrite.

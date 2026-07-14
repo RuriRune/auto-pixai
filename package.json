@@ -1,16 +1,16 @@
 {
-  "name": "auto-pixai-english",
-  "version": "2.0.1",
-  "description": "English PixAI Auto-Claimer for Unraid",
+  "name": "auto-pixai",
+  "version": "2.1.0",
+  "description": "Automated daily credit claimer for pixai.art",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
   },
+  "license": "ISC",
   "dependencies": {
     "puppeteer": "^22.6.3",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "dotenv": "^16.4.5",
-    "axios": "^1.6.8"
+    "dotenv": "^16.4.5"
   }
 }
