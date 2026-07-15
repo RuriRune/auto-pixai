@@ -15,6 +15,10 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y google-chrome-stable --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
+# rebrowser-puppeteer would otherwise download its own Chrome-for-testing at
+# install time; we use the system google-chrome-stable instead.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+
 WORKDIR /app
 COPY package*.json ./
 RUN npm install

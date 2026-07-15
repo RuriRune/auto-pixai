@@ -74,27 +74,31 @@ async function runClaim(trigger = "manual") {
 	log("INFO", `Run triggered (${trigger})`);
 	let result;
 
-	const tryHeadless = settings.headlessMode !== "visible";
+	// Visible (Xvfb) first: headed Chrome passes Turnstile's fingerprint
+	// check far more often than headless, and Xvfb is already in the image,
+	// so there's no cost to defaulting to it. Headless is only a fallback
+	// (e.g. if the X display is broken) or when forced via settings.
 	const tryVisible = settings.headlessMode !== "headless";
+	const tryHeadless = settings.headlessMode !== "visible";
 
-	if (tryHeadless) {
+	if (tryVisible) {
 		try {
-			result = await attemptRun(true, settings);
+			result = await attemptRun(false, settings);
 		} catch (e) {
-			log("ERROR", `Headless attempt failed: ${e.message}`);
+			log("ERROR", `Visible attempt failed: ${e.message}`);
 			result = { status: "ERROR", message: e.message };
 		}
 	}
 
 	const needsFallback =
-		tryVisible && (result === undefined || result.status === "TURNSTILE_BLOCKED" || result.status === "ERROR");
+		tryHeadless && (result === undefined || result.status === "TURNSTILE_BLOCKED" || result.status === "ERROR");
 
 	if (needsFallback) {
-		log("INFO", "Retrying with a visible (Xvfb) browser...");
+		log("INFO", "Retrying with a headless browser...");
 		try {
-			result = await attemptRun(false, settings);
+			result = await attemptRun(true, settings);
 		} catch (e) {
-			log("ERROR", `Visible attempt failed: ${e.message}`);
+			log("ERROR", `Headless attempt failed: ${e.message}`);
 			result = { status: "ERROR", message: e.message };
 		}
 	}

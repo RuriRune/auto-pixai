@@ -1,6 +1,6 @@
 {
   "name": "auto-pixai",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "PixAI daily credit claimer with web dashboard, cron scheduling, and Pushover notifications",
   "main": "server.js",
   "scripts": {
@@ -8,11 +8,9 @@
   },
   "license": "ISC",
   "dependencies": {
-    "puppeteer": "^22.6.3",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "rebrowser-puppeteer": "^24.8.1"
   }
 }
