@@ -18,13 +18,17 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
-COPY app.js start.sh ./
+COPY lib ./lib
+COPY public ./public
+COPY server.js claimer.js start.sh ./
 RUN chmod +x /app/start.sh
 
-# /data is mounted from Unraid for cookie persistence and debug screenshots
+# /data is mounted from Unraid for cookies.json, status/schedule, and debug screenshots
 VOLUME ["/data"]
 
 ENV IS_DOCKER=true
 ENV DISPLAY=:99
+ENV PORT=8080
+EXPOSE 8080
 
 CMD ["/app/start.sh"]

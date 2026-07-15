@@ -1,56 +1,70 @@
 # Auto-Pixai
 
-Rebuilt from the original [Mr-Smilin/Auto-Pixai](https://github.com/Mr-Smilin/Auto-Pixai), with:
+A daily PixAI credit claimer with a small web dashboard, built-in cron
+scheduling, and Pushover alerts. No automated login — PixAI's login page has
+a reCAPTCHA v3 badge that can silently block automated logins with no visible
+error, so this relies entirely on a manually-exported session cookie instead.
 
-- **Cookie persistence** — session cookies saved to `/data/cookies.json`, loaded on
-  every run, and re-saved after every run (success or not) so they stay fresh and
-  logins are skipped whenever possible.
-- **Turnstile handling** — no external solving service. Detects the Cloudflare
-  Turnstile iframe, gives it time to self-solve, and clicks the checkbox once if
-  it hasn't. This matches how the widget behaves in a real browser.
-- **Headless-first, visible-mode fallback** — tries headless Chrome first, and
-  only spins up the Xvfb-backed visible browser if the headless attempt errors
-  out or Turnstile never clears. Set `FORCE_HEADLESS=true` or `=false` in `.env`
-  to pin one mode.
-- **Debug screenshots** — written to `/data/` at each key step (before/after
-  claim, and on any failure) so issues can be diagnosed without guessing.
-- **Text-based button matching** instead of fixed CSS paths, since pixai.art's
-  DOM/class names change over time and fixed selectors are the first thing to
-  break.
+## How it works
+
+- A single Node/Express server stays running in the container and serves the
+  dashboard at `http://<host>:8080`.
+- It schedules the claim job internally via `node-cron`, using a cron
+  expression you set from the dashboard (persisted to `/data/schedule.json`).
+- Each run: loads `/data/cookies.json`, applies it, confirms the site accepts
+  it (checks for the real `user_token` auth cookie — not just DOM text),
+  handles the Cloudflare Turnstile widget (self-solves in most cases; clicks
+  the checkbox once if it hasn't after 15s), clicks Claim, and re-saves
+  cookies afterward so the session stays fresh.
+- Tries headless first; only falls back to a visible (Xvfb) browser if
+  Turnstile doesn't clear or something errors.
+- On any non-success/non-already-claimed result — including missing or
+  invalid cookies — it sends a Pushover notification (if configured) and
+  records the result in run history.
+- Debug screenshots at each key step land in `/data/*.png` and show up in the
+  dashboard's screenshot gallery.
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and fill in `LOGINNAME` / `PASSWORD`.
+1. Copy `.env.example` to `.env`. Pushover fields and `TZ` are optional.
 2. `docker build -t auto-pixai .`
-3. Run with `/data` mounted to a persistent volume (for cookies + screenshots), e.g.:
+3. Run with `/data` mounted to a persistent volume and the port published:
    ```
-   docker run --env-file .env -v /mnt/user/appdata/auto-pixai:/data auto-pixai
+   docker run --env-file .env -p 8080:8080 -v /mnt/user/appdata/auto-pixai:/data auto-pixai
    ```
-4. Schedule it daily (cron / Unraid User Scripts / docker-compose + ofelia, etc).
+4. Open `http://<host>:8080` — set your cron schedule there (default is
+   `0 9 * * *`, i.e. daily at 09:00 in the container's timezone).
 
-## Seeding a session (recommended)
+**No built-in authentication.** This is meant for a trusted LAN/Unraid
+environment. If you expose it beyond that, put it behind your own
+reverse proxy with access control.
 
-pixai.art's login page has a reCAPTCHA v3 badge. v3 scores requests
-invisibly — there's no checkbox to click, and it can silently refuse to
-grant a session to an automated browser with no visible error. Automated
-login is included as a fallback, but the reliable path is:
+## Seeding a session (required — there is no login flow)
 
 1. Log into pixai.art normally in your own browser.
 2. Export cookies for the `pixai.art` domain with a cookie-manager extension
    (e.g. Cookie-Editor) as JSON.
-3. Save that export as `data/cookies.json` (the mounted `/data` volume).
-4. On the next run the app loads it, confirms the `user_token` auth cookie is
-   present, and skips login entirely — then re-saves refreshed cookies after
-   every run so the session stays alive as long as the container keeps
-   running on schedule.
+3. Save that export as `cookies.json` in the mounted data folder (e.g.
+   `/mnt/user/appdata/auto-pixai/cookies.json`).
+4. The dashboard's Cookies card will show "Valid" once it confirms a
+   `user_token` cookie is present, along with its expiry.
 
-The app logs whether a loaded/saved cookie file actually contains the
-`user_token` auth cookie (vs. only analytics cookies), so it's obvious from
-the logs whether a session is real or not.
+The auth cookie is long-lived (~54 days) and gets re-saved after every run,
+so as long as the container runs on schedule you shouldn't need to re-export
+often. If it ever shows "Invalid" or "Missing," re-export and drop in a fresh
+copy — you'll also get a high-priority Pushover alert when that happens (if
+configured).
+
+## Pushover
+
+Set `PUSHOVER_USER_KEY` and `PUSHOVER_APP_TOKEN` in `.env` to enable. By
+default it only notifies on problems (missing/invalid cookies, Turnstile
+blocked, claim button not found, errors). Set `NOTIFY_ON_SUCCESS=true` to
+also get pinged on successful claims.
 
 ## If a step stops matching the site
 
-Check the relevant screenshot in `/data/` (e.g. `login_fail_*.png`,
-`2_turnstile_unresolved.png`, `2_after_claim.png`) and the console log — both
-point at exactly which step failed, so a fix is usually a small selector/text
-tweak in `app.js` rather than a rewrite.
+Check the relevant screenshot in the dashboard gallery (e.g.
+`1_before_claim.png`, `2_turnstile_unresolved.png`, `2_after_claim.png`,
+`cookies_rejected.png`) alongside the run's message in the History table —
+together they point at exactly which step failed.

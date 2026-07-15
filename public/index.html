@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PixAI Auto-Claimer</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="wrap">
+	<header>
+		<h1>PixAI Auto-Claimer</h1>
+		<button id="runBtn">Run now</button>
+	</header>
+
+	<section class="cards">
+		<div class="card">
+			<h2>Last run</h2>
+			<div class="status-badge neutral" id="statusBadge">—</div>
+			<p id="statusTime" class="muted">—</p>
+			<p id="statusMessage"></p>
+		</div>
+
+		<div class="card">
+			<h2>Cookies</h2>
+			<div class="status-badge neutral" id="cookieBadge">—</div>
+			<p id="cookieDetail" class="muted"></p>
+		</div>
+
+		<div class="card">
+			<h2>Schedule</h2>
+			<div class="row">
+				<input type="text" id="cronInput" placeholder="0 9 * * *" />
+				<button id="saveScheduleBtn">Save</button>
+			</div>
+			<p class="hint">5-field cron (minute hour day month weekday)</p>
+			<p id="scheduleSaved" class="muted"></p>
+		</div>
+	</section>
+
+	<section class="card">
+		<h2>History</h2>
+		<table id="historyTable">
+			<thead><tr><th>Time</th><th>Trigger</th><th>Status</th><th>Message</th></tr></thead>
+			<tbody></tbody>
+		</table>
+	</section>
+
+	<section class="card">
+		<h2>Screenshots</h2>
+		<div class="gallery" id="gallery"></div>
+	</section>
+</div>
+
+<div class="lightbox" id="lightbox">
+	<img id="lightboxImg" src="" alt="" />
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
