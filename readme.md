@@ -28,6 +28,26 @@ Rebuilt from the original [Mr-Smilin/Auto-Pixai](https://github.com/Mr-Smilin/Au
    ```
 4. Schedule it daily (cron / Unraid User Scripts / docker-compose + ofelia, etc).
 
+## Seeding a session (recommended)
+
+pixai.art's login page has a reCAPTCHA v3 badge. v3 scores requests
+invisibly — there's no checkbox to click, and it can silently refuse to
+grant a session to an automated browser with no visible error. Automated
+login is included as a fallback, but the reliable path is:
+
+1. Log into pixai.art normally in your own browser.
+2. Export cookies for the `pixai.art` domain with a cookie-manager extension
+   (e.g. Cookie-Editor) as JSON.
+3. Save that export as `data/cookies.json` (the mounted `/data` volume).
+4. On the next run the app loads it, confirms the `user_token` auth cookie is
+   present, and skips login entirely — then re-saves refreshed cookies after
+   every run so the session stays alive as long as the container keeps
+   running on schedule.
+
+The app logs whether a loaded/saved cookie file actually contains the
+`user_token` auth cookie (vs. only analytics cookies), so it's obvious from
+the logs whether a session is real or not.
+
 ## If a step stops matching the site
 
 Check the relevant screenshot in `/data/` (e.g. `login_fail_*.png`,

@@ -34,11 +34,48 @@ async function shot(page, name) {
 }
 
 // ── Cookie persistence ──────────────────────────────────────────────────
+// The auth session lives in an httpOnly cookie named "user_token" (JWT),
+// alongside a signature cookie and an expiry-tracking cookie. Everything
+// else in a typical export is analytics/tracking noise and is harmless to
+// carry along but isn't what keeps you logged in.
+const AUTH_COOKIE_NAME = "user_token";
+
+// Accepts both our own saved format (Puppeteer's page.cookies() shape) and a
+// raw browser-extension export (e.g. Cookie-Editor), so you can drop an
+// exported JSON straight in as data/cookies.json to seed a session.
+function normalizeCookie(c) {
+	const rawSameSite = (c.sameSite || "").toString().toLowerCase();
+	let sameSite;
+	if (rawSameSite === "strict") sameSite = "Strict";
+	else if (rawSameSite === "lax") sameSite = "Lax";
+	else if (rawSameSite === "no_restriction" || rawSameSite === "none") sameSite = "None";
+	else sameSite = undefined; // "unspecified" or missing — let Chrome default
+
+	const expires = c.expires ?? c.expirationDate ?? undefined;
+
+	return {
+		name: c.name,
+		value: c.value,
+		domain: c.domain,
+		path: c.path || "/",
+		expires,
+		httpOnly: !!c.httpOnly,
+		secure: c.secure ?? true,
+		sameSite,
+	};
+}
+
 function loadCookies() {
 	try {
 		if (fs.existsSync(COOKIE_FILE)) {
-			const cookies = JSON.parse(fs.readFileSync(COOKIE_FILE, "utf-8"));
-			log("COOKIES", `Loaded ${cookies.length} cookies from ${COOKIE_FILE}`);
+			const raw = JSON.parse(fs.readFileSync(COOKIE_FILE, "utf-8"));
+			const cookies = raw.map(normalizeCookie);
+			const hasAuth = cookies.some((c) => c.name === AUTH_COOKIE_NAME);
+			log(
+				"COOKIES",
+				`Loaded ${cookies.length} cookies from ${COOKIE_FILE}` +
+					(hasAuth ? " (includes auth cookie)" : " (NO auth cookie found — this file is analytics-only)")
+			);
 			return cookies;
 		}
 	} catch (e) {
@@ -51,7 +88,12 @@ function saveCookies(cookies) {
 	try {
 		fs.mkdirSync(DATA_PATH, { recursive: true });
 		fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
-		log("COOKIES", `Saved ${cookies.length} cookies to ${COOKIE_FILE}`);
+		const hasAuth = cookies.some((c) => c.name === AUTH_COOKIE_NAME);
+		log(
+			"COOKIES",
+			`Saved ${cookies.length} cookies to ${COOKIE_FILE}` +
+				(hasAuth ? " (includes auth cookie)" : " (WARNING: no auth cookie present)")
+		);
 	} catch (e) {
 		log("COOKIES", `Failed to save cookies: ${e.message}`);
 	}
@@ -61,16 +103,20 @@ async function applyCookies(page, cookies) {
 	for (const cookie of cookies) {
 		try {
 			await page.setCookie({
-				name: cookie.name,
-				value: cookie.value,
+				...cookie,
 				domain: cookie.domain.startsWith(".") ? cookie.domain : `.${cookie.domain}`,
-				path: cookie.path || "/",
-				secure: cookie.secure ?? true,
-				sameSite: cookie.sameSite || "Lax",
 			});
 		} catch (_) {}
 	}
 	log("COOKIES", `Applied ${cookies.length} cookies to page`);
+}
+
+// Ground-truth auth check: is the actual session cookie present (and
+// non-empty)? Far more reliable than inferring login state from DOM text,
+// which can be wrong during transient UI states.
+async function hasAuthCookie(page) {
+	const cookies = await page.cookies();
+	return cookies.some((c) => c.name === AUTH_COOKIE_NAME && c.value);
 }
 
 // ── Browser ─────────────────────────────────────────────────────────────
@@ -141,13 +187,6 @@ async function clickByText(page, pattern, { timeout = 8000, requireEnabled = fal
 	);
 }
 
-async function isLoggedIn(page) {
-	return await page.evaluate(() => {
-		const els = Array.from(document.querySelectorAll("button, [role='button'], a"));
-		return !els.some((el) => /^sign\s*in$/i.test((el.innerText || el.textContent || "").trim()));
-	});
-}
-
 // ── Login ────────────────────────────────────────────────────────────────
 async function login(page) {
 	if (!LOGIN_NAME || !PASSWORD) {
@@ -200,17 +239,28 @@ async function login(page) {
 		}
 	}
 
-	try {
-		await page.waitForFunction(
-			() =>
-				!Array.from(document.querySelectorAll("button, [role='button'], a")).some((el) =>
-					/^sign\s*in$/i.test((el.innerText || el.textContent || "").trim())
-				),
-			{ timeout: 20000 }
-		);
-	} catch (_) {
+	// Poll for the actual auth cookie rather than trusting DOM state — a
+	// "Sign in" button disappearing can be a transient UI state even if the
+	// server rejected the login (e.g. reCAPTCHA v3 risk scoring silently
+	// blocking it).
+	const start = Date.now();
+	let confirmed = false;
+	while (Date.now() - start < 20000) {
+		if (await hasAuthCookie(page)) {
+			confirmed = true;
+			break;
+		}
+		await delay(500);
+	}
+
+	if (!confirmed) {
 		await shot(page, "login_fail_confirm");
-		throw new Error("Session not confirmed within 20s after login attempt");
+		throw new Error(
+			"No auth cookie appeared within 20s after login attempt — the form likely submitted but the " +
+				"server didn't grant a session. This page has a reCAPTCHA v3 badge, which scores risk invisibly " +
+				"and can silently block automated logins with no visible error. If this keeps happening, seed " +
+				"data/cookies.json from a real logged-in browser session instead of relying on automated login."
+		);
 	}
 
 	saveCookies(await page.cookies());
@@ -357,12 +407,12 @@ async function attemptRun(headless) {
 			await page.reload({ waitUntil: "networkidle2" });
 		}
 
-		if (!(await isLoggedIn(page))) {
-			log("AUTH", "Not logged in — running login flow.");
+		if (await hasAuthCookie(page)) {
+			log("AUTH", "Session restored from cookies — skipping login.");
+		} else {
+			log("AUTH", "No valid auth cookie — running login flow.");
 			await login(page);
 			await page.goto(HOME_URL, { waitUntil: "networkidle2" });
-		} else {
-			log("AUTH", "Session restored from cookies — skipping login.");
 		}
 
 		const result = await claim(page);
