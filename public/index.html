@@ -47,6 +47,37 @@
 	</section>
 
 	<section class="card">
+		<h2>Settings</h2>
+
+		<div class="settings-grid">
+			<label class="settings-label" for="pushoverUserKey">Pushover User Key</label>
+			<input type="text" id="pushoverUserKey" placeholder="u1a2b3c4..." />
+
+			<label class="settings-label" for="pushoverAppToken">Pushover App Token</label>
+			<input type="password" id="pushoverAppToken" placeholder="a1b2c3d4..." />
+
+			<label class="settings-label" for="headlessMode">Browser mode</label>
+			<select id="headlessMode">
+				<option value="auto">Auto (headless first, fall back to visible)</option>
+				<option value="headless">Headless only</option>
+				<option value="visible">Visible only</option>
+			</select>
+
+			<label class="settings-label" for="notifyOnSuccess">Notify on success too</label>
+			<input type="checkbox" id="notifyOnSuccess" />
+
+			<label class="settings-label" for="debugScreenshots">Save debug screenshots</label>
+			<input type="checkbox" id="debugScreenshots" />
+		</div>
+
+		<div class="row" style="margin-top: 14px;">
+			<button id="saveSettingsBtn">Save settings</button>
+			<button id="testPushoverBtn" class="secondary">Send test notification</button>
+		</div>
+		<p id="settingsSaved" class="muted"></p>
+	</section>
+
+	<section class="card">
 		<h2>Screenshots</h2>
 		<div class="gallery" id="gallery"></div>
 	</section>

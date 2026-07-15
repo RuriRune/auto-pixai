@@ -120,8 +120,67 @@ document.getElementById("saveScheduleBtn").addEventListener("click", async () =>
 	setTimeout(() => (scheduleSaved.textContent = ""), 4000);
 });
 
+const pushoverUserKeyInput = document.getElementById("pushoverUserKey");
+const pushoverAppTokenInput = document.getElementById("pushoverAppToken");
+const headlessModeSelect = document.getElementById("headlessMode");
+const notifyOnSuccessInput = document.getElementById("notifyOnSuccess");
+const debugScreenshotsInput = document.getElementById("debugScreenshots");
+const saveSettingsBtn = document.getElementById("saveSettingsBtn");
+const testPushoverBtn = document.getElementById("testPushoverBtn");
+const settingsSaved = document.getElementById("settingsSaved");
+
+async function refreshSettings() {
+	const res = await fetch("/api/settings");
+	const data = await res.json();
+	if (document.activeElement !== pushoverUserKeyInput) pushoverUserKeyInput.value = data.pushoverUserKey || "";
+	if (document.activeElement !== pushoverAppTokenInput) pushoverAppTokenInput.value = data.pushoverAppToken || "";
+	if (document.activeElement !== headlessModeSelect) headlessModeSelect.value = data.headlessMode || "auto";
+	notifyOnSuccessInput.checked = !!data.notifyOnSuccess;
+	debugScreenshotsInput.checked = !!data.debugScreenshots;
+}
+
+saveSettingsBtn.addEventListener("click", async () => {
+	const res = await fetch("/api/settings", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			pushoverUserKey: pushoverUserKeyInput.value.trim(),
+			pushoverAppToken: pushoverAppTokenInput.value.trim(),
+			headlessMode: headlessModeSelect.value,
+			notifyOnSuccess: notifyOnSuccessInput.checked,
+			debugScreenshots: debugScreenshotsInput.checked,
+		}),
+	});
+	const data = await res.json();
+	settingsSaved.textContent = res.ok ? "Settings saved." : `Error: ${data.error}`;
+	setTimeout(() => (settingsSaved.textContent = ""), 4000);
+});
+
+testPushoverBtn.addEventListener("click", async () => {
+	testPushoverBtn.disabled = true;
+	testPushoverBtn.textContent = "Sending…";
+	try {
+		const res = await fetch("/api/settings/test-pushover", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				pushoverUserKey: pushoverUserKeyInput.value.trim(),
+				pushoverAppToken: pushoverAppTokenInput.value.trim(),
+			}),
+		});
+		const data = await res.json();
+		settingsSaved.textContent = res.ok ? "Test notification sent — check your device." : `Error: ${data.error}`;
+	} catch (e) {
+		settingsSaved.textContent = `Error: ${e.message}`;
+	} finally {
+		testPushoverBtn.disabled = false;
+		testPushoverBtn.textContent = "Send test notification";
+		setTimeout(() => (settingsSaved.textContent = ""), 6000);
+	}
+});
+
 async function refreshAll() {
-	await Promise.all([refreshStatus(), refreshCookies(), refreshSchedule(), refreshGallery()]);
+	await Promise.all([refreshStatus(), refreshCookies(), refreshSchedule(), refreshGallery(), refreshSettings()]);
 }
 
 refreshAll();

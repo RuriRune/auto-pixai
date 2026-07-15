@@ -26,14 +26,18 @@ error, so this relies entirely on a manually-exported session cookie instead.
 
 ## Setup
 
-1. Copy `.env.example` to `.env`. Pushover fields and `TZ` are optional.
-2. `docker build -t auto-pixai .`
-3. Run with `/data` mounted to a persistent volume and the port published:
+1. `docker build -t auto-pixai .`
+2. Run with `/data` mounted to a persistent volume and the port published:
    ```
-   docker run --env-file .env -p 8080:8080 -v /mnt/user/appdata/auto-pixai:/data auto-pixai
+   docker run -p 8080:8080 -v /mnt/user/appdata/auto-pixai:/data auto-pixai
    ```
-4. Open `http://<host>:8080` — set your cron schedule there (default is
-   `0 9 * * *`, i.e. daily at 09:00 in the container's timezone).
+3. Open `http://<host>:8080` — set your cron schedule, Pushover credentials,
+   browser mode, and notification preferences all from the **Settings**
+   section. A `.env` file only matters for infra-level values (`PORT`,
+   `DATA_PATH`, `TZ`, `DEFAULT_CRON` for the very first run) — see
+   `.env.example`.
+4. Use **Send test notification** in Settings to confirm Pushover is wired up
+   correctly before relying on it.
 
 **No built-in authentication.** This is meant for a trusted LAN/Unraid
 environment. If you expose it beyond that, put it behind your own
@@ -57,10 +61,11 @@ configured).
 
 ## Pushover
 
-Set `PUSHOVER_USER_KEY` and `PUSHOVER_APP_TOKEN` in `.env` to enable. By
-default it only notifies on problems (missing/invalid cookies, Turnstile
-blocked, claim button not found, errors). Set `NOTIFY_ON_SUCCESS=true` to
-also get pinged on successful claims.
+Set your Pushover user key and app token in the dashboard's **Settings**
+section to enable notifications, then click **Send test notification** to
+confirm delivery. By default it only notifies on problems (missing/invalid
+cookies, Turnstile blocked, claim button not found, errors). Toggle "Notify
+on success too" if you also want a ping on successful claims.
 
 ## If a step stops matching the site
 

@@ -7,6 +7,8 @@ const path = require("path");
 const { runClaim } = require("./claimer");
 const { readStatus } = require("./lib/status");
 const { loadScheduleExpr, saveScheduleExpr } = require("./lib/schedule");
+const { loadSettings, saveSettings } = require("./lib/settings");
+const { sendPushover } = require("./lib/notify");
 const {
 	DATA_PATH,
 	cookieFileExists,
@@ -78,6 +80,50 @@ app.post("/api/schedule", (req, res) => {
 	}
 });
 
+app.get("/api/settings", (req, res) => {
+	res.json(loadSettings());
+});
+
+app.post("/api/settings", (req, res) => {
+	const body = req.body || {};
+	const allowedHeadlessModes = ["auto", "headless", "visible"];
+	if (body.headlessMode && !allowedHeadlessModes.includes(body.headlessMode)) {
+		return res.status(400).json({ error: `headlessMode must be one of: ${allowedHeadlessModes.join(", ")}` });
+	}
+	const next = saveSettings({
+		pushoverUserKey: body.pushoverUserKey ?? undefined,
+		pushoverAppToken: body.pushoverAppToken ?? undefined,
+		notifyOnSuccess: typeof body.notifyOnSuccess === "boolean" ? body.notifyOnSuccess : undefined,
+		debugScreenshots: typeof body.debugScreenshots === "boolean" ? body.debugScreenshots : undefined,
+		headlessMode: body.headlessMode ?? undefined,
+	});
+	res.json(next);
+});
+
+app.post("/api/settings/test-pushover", async (req, res) => {
+	const body = req.body || {};
+	const settings = loadSettings();
+	const userKey = body.pushoverUserKey || settings.pushoverUserKey;
+	const appToken = body.pushoverAppToken || settings.pushoverAppToken;
+
+	if (!userKey || !appToken) {
+		return res.status(400).json({ error: "Enter both a Pushover user key and app token first." });
+	}
+
+	const result = await sendPushover({
+		title: "Auto-Pixai test notification",
+		message: "If you can see this, Pushover is wired up correctly.",
+		userKey,
+		appToken,
+	});
+
+	if (result.status === 1) {
+		res.json({ ok: true });
+	} else {
+		res.status(400).json({ error: result.errors ? result.errors.join(", ") : result.error || "Pushover rejected the request." });
+	}
+});
+
 app.post("/api/run", async (req, res) => {
 	if (isRunning) return res.status(409).json({ error: "A run is already in progress" });
 	const result = await triggerRun("manual");
@@ -111,7 +157,13 @@ app.get("/screenshots/:name", (req, res) => {
 	res.sendFile(filePath);
 });
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(
+	express.static(path.join(__dirname, "public"), {
+		etag: false,
+		lastModified: false,
+		setHeaders: (res) => res.setHeader("Cache-Control", "no-store"),
+	})
+);
 
 scheduleJob(loadScheduleExpr());
 

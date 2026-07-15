@@ -6,19 +6,18 @@ const cookiesLib = require("./lib/cookies");
 const { claim } = require("./lib/claim");
 const { sendPushover } = require("./lib/notify");
 const { recordRun } = require("./lib/status");
+const { loadSettings } = require("./lib/settings");
 
 const HOME_URL = "https://pixai.art/";
 const DATA_PATH = cookiesLib.DATA_PATH;
-const DEBUG_SHOTS = process.env.DEBUG_SCREENSHOTS !== "false";
-const NOTIFY_ON_SUCCESS = process.env.NOTIFY_ON_SUCCESS === "true";
 
 function log(tag, msg) {
 	console.log(`[${tag}] ${msg}`);
 }
 
-function makeShot(page) {
+function makeShot(page, debugShots) {
 	return async (name) => {
-		if (!DEBUG_SHOTS) return;
+		if (!debugShots) return;
 		try {
 			fs.mkdirSync(DATA_PATH, { recursive: true });
 			await page.screenshot({ path: path.join(DATA_PATH, `${name}.png`) });
@@ -26,7 +25,7 @@ function makeShot(page) {
 	};
 }
 
-async function attemptRun(headless) {
+async function attemptRun(headless, settings) {
 	log("INFO", `Starting attempt (headless=${headless})`);
 
 	if (!cookiesLib.cookieFileExists()) {
@@ -45,7 +44,7 @@ async function attemptRun(headless) {
 	}
 
 	const { browser, page } = await launchBrowser(headless);
-	const shot = makeShot(page);
+	const shot = makeShot(page, settings.debugScreenshots);
 	try {
 		await page.goto(HOME_URL, { waitUntil: "networkidle2" });
 		await cookiesLib.applyCookies(page, cookies);
@@ -71,21 +70,29 @@ async function attemptRun(headless) {
 }
 
 async function runClaim(trigger = "manual") {
+	const settings = loadSettings();
 	log("INFO", `Run triggered (${trigger})`);
 	let result;
 
-	try {
-		result = await attemptRun(true);
-	} catch (e) {
-		log("ERROR", `Headless attempt failed: ${e.message}`);
-		result = { status: "ERROR", message: e.message };
+	const tryHeadless = settings.headlessMode !== "visible";
+	const tryVisible = settings.headlessMode !== "headless";
+
+	if (tryHeadless) {
+		try {
+			result = await attemptRun(true, settings);
+		} catch (e) {
+			log("ERROR", `Headless attempt failed: ${e.message}`);
+			result = { status: "ERROR", message: e.message };
+		}
 	}
 
-	const needsFallback = result.status === "TURNSTILE_BLOCKED" || result.status === "ERROR";
+	const needsFallback =
+		tryVisible && (result === undefined || result.status === "TURNSTILE_BLOCKED" || result.status === "ERROR");
+
 	if (needsFallback) {
 		log("INFO", "Retrying with a visible (Xvfb) browser...");
 		try {
-			result = await attemptRun(false);
+			result = await attemptRun(false, settings);
 		} catch (e) {
 			log("ERROR", `Visible attempt failed: ${e.message}`);
 			result = { status: "ERROR", message: e.message };
@@ -108,9 +115,16 @@ async function runClaim(trigger = "manual") {
 			title: `PixAI claim failed: ${result.status}`,
 			message: result.message || "Check the dashboard for screenshots and logs.",
 			priority: isCookieProblem ? 1 : 0,
+			userKey: settings.pushoverUserKey,
+			appToken: settings.pushoverAppToken,
 		});
-	} else if (NOTIFY_ON_SUCCESS) {
-		await sendPushover({ title: `PixAI claim: ${result.status}`, message: result.message || "" });
+	} else if (settings.notifyOnSuccess) {
+		await sendPushover({
+			title: `PixAI claim: ${result.status}`,
+			message: result.message || "",
+			userKey: settings.pushoverUserKey,
+			appToken: settings.pushoverAppToken,
+		});
 	}
 
 	return entry;
