@@ -8,9 +8,9 @@
   },
   "license": "ISC",
   "dependencies": {
-    "puppeteer-core": "^22.6.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "puppeteer-core": "^22.15.0"
   }
 }
