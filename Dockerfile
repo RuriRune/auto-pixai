@@ -1,9 +1,16 @@
 FROM node:20-slim
 
-# Only need the adb client here — Chrome itself runs on the separate
-# Android emulator container, connected to over ADB + Chrome DevTools
-# Protocol. No Chrome/Xvfb install needed in this image anymore.
-RUN apt-get update && apt-get install -y --no-install-recommends adb \
+# Debian's apt package for adb is often several years stale and lacks
+# newer commands (e.g. `adb pair` for Android 11+ wireless debugging).
+# Pull Google's official platform-tools binary directly instead — the
+# same one used on a typical desktop install.
+RUN apt-get update && apt-get install -y --no-install-recommends unzip wget ca-certificates \
+    && wget -q -O /tmp/platform-tools.zip https://dl.google.com/android/repo/platform-tools-latest-linux.zip \
+    && unzip -q /tmp/platform-tools.zip -d /opt \
+    && ln -s /opt/platform-tools/adb /usr/local/bin/adb \
+    && rm /tmp/platform-tools.zip \
+    && apt-get purge -y unzip wget \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
