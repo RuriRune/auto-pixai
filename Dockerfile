@@ -17,6 +17,11 @@ COPY server.js claimer.js ./
 VOLUME ["/data"]
 
 ENV PORT=8080
+# adb stores its key pair at $HOME/.android/adbkey(.pub). Pointing HOME at
+# the persistent /data volume means that key survives container
+# rebuilds/recreations — authorize it on the phone once, and it stays
+# trusted forever instead of needing a fresh tap after every deploy.
+ENV HOME=/data
 EXPOSE 8080
 
 CMD ["node", "/app/server.js"]
