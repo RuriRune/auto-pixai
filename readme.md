@@ -57,6 +57,14 @@ dashboard gallery.
    restrictions (Settings → Battery and device care → Battery → Background
    usage limits), and set Battery protection → Maximum if the device stays
    permanently plugged in.
+6. **Display zoom**: Settings → Display → Screen zoom and font → set zoom to
+   minimum. PixAI's Daily Claim modal has grown taller over time (extra
+   promo banners), and at default zoom the Claim button sits below the
+   fold — reducing zoom fits the whole modal on-screen with no scrolling
+   needed at all, which is far more reliable than trying to programmatically
+   scroll to it. (The app still attempts a real touch-swipe scroll as a
+   fallback if a future layout change pushes something out of view again,
+   but this setting is what actually makes claiming reliable day-to-day.)
 
 Important: `adb tcpip 5555` (and wireless-debugging pairing) doesn't
 survive a device reboot — after a reboot you'll need to briefly reconnect
