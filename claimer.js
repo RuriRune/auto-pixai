@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { connectAndroidChrome, disconnectAndroidChrome } = require("./lib/androidBrowser");
+const { connectAndroidChrome, disconnectAndroidChrome, forceSleepScreen } = require("./lib/androidBrowser");
 const cookiesLib = require("./lib/cookies");
 const { claim } = require("./lib/claim");
 const { sendPushover } = require("./lib/notify");
@@ -107,6 +107,13 @@ async function runClaim(trigger = "manual") {
 				? e.message
 				: `${e.message} (check the Android device is powered on, connected to WiFi, and reachable at ANDROID_ADB_HOST:ANDROID_ADB_PORT)`,
 		};
+		if (isTimeout) {
+			// The stuck attempt's own cleanup (disconnectAndroidChrome) may
+			// never run — it's still out there hung, not cancelled. Don't
+			// leave the screen lit indefinitely waiting for it.
+			log("INFO", "Run timed out — attempting to put the screen back to sleep independently.");
+			await forceSleepScreen(log);
+		}
 	}
 
 	const entry = {
