@@ -1,28 +1,17 @@
+# Reference compose file for a non-Unraid deployment (e.g. plain Docker
+# Compose on another host). If you're using Unraid's GUI directly instead,
+# you don't need this file at all — just the single auto-pixai container,
+# with ANDROID_ADB_HOST/ANDROID_ADB_PORT pointed at your Android device.
+#
+# There is no emulator service here — this connects to a real Android
+# device (e.g. a Galaxy XCover 5) on your LAN over ADB. See readme.md for
+# the phone-side pairing steps.
 services:
-  android:
-    image: budtmo/docker-android:emulator_11.0
-    container_name: auto-pixai-android
-    privileged: true
-    devices:
-      - /dev/kvm:/dev/kvm
-    environment:
-      - EMULATOR_DEVICE=Samsung Galaxy S10
-      - WEB_VNC=true
-    ports:
-      # noVNC — open http://<host>:6080 in a browser to watch/manually
-      # interact with the device if ever needed.
-      - "6080:6080"
-      # ADB
-      - "5555:5555"
-    restart: unless-stopped
-
   auto-pixai:
     build: .
     container_name: auto-pixai
-    depends_on:
-      - android
     environment:
-      - ANDROID_ADB_HOST=android
+      - ANDROID_ADB_HOST=192.168.1.50  # replace with your device's reserved LAN IP
       - ANDROID_ADB_PORT=5555
       - DATA_PATH=/data/
       - PORT=8080

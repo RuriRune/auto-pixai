@@ -176,12 +176,6 @@ testPushoverBtn.addEventListener("click", async () => {
 	}
 });
 
-const novncLink = document.getElementById("novncLink");
-if (novncLink) {
-	// Same host as the dashboard, default noVNC port for the android container.
-	novncLink.href = `http://${window.location.hostname}:6080`;
-}
-
 async function refreshAll() {
 	await Promise.all([refreshStatus(), refreshCookies(), refreshSchedule(), refreshGallery(), refreshSettings()]);
 }

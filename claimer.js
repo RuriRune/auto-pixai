@@ -80,7 +80,7 @@ async function runClaim(trigger = "manual") {
 		log("ERROR", `Attempt failed: ${e.message}`);
 		result = {
 			status: "ERROR",
-			message: `${e.message} (check that the android container is running and reachable, and that /dev/kvm is available on the host)`,
+			message: `${e.message} (check the Android device is powered on, connected to WiFi, and reachable at ANDROID_ADB_HOST:ANDROID_ADB_PORT)`,
 		};
 	}
 
