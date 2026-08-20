@@ -14,6 +14,7 @@ const {
 	cookieFileExists,
 	loadCookies,
 	hasAuthCookieInList,
+	isAuthCookieFresh,
 	authCookieExpiry,
 } = require("./lib/cookies");
 
@@ -53,15 +54,17 @@ app.get("/api/status", (req, res) => {
 app.get("/api/cookies", (req, res) => {
 	const exists = cookieFileExists();
 	let hasAuth = false;
+	let isFresh = false;
 	let expiry = null;
 	if (exists) {
 		try {
 			const cookies = loadCookies();
 			hasAuth = hasAuthCookieInList(cookies);
+			isFresh = isAuthCookieFresh(cookies);
 			expiry = authCookieExpiry(cookies);
 		} catch (_) {}
 	}
-	res.json({ exists, hasAuth, expiry });
+	res.json({ exists, hasAuth, isFresh, expiry });
 });
 
 app.get("/api/schedule", (req, res) => {

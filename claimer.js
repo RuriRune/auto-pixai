@@ -58,6 +58,12 @@ async function attemptRun(settings) {
 			message: "cookies.json has no user_token auth cookie — it's analytics-only or malformed. Re-export a fresh session.",
 		};
 	}
+	if (!cookiesLib.isAuthCookieFresh(cookies)) {
+		return {
+			status: "COOKIES_EXPIRED",
+			message: `The user_token cookie expired ${cookiesLib.authCookieExpiry(cookies)}. Re-export a fresh session and replace cookies.json.`,
+		};
+	}
 
 	const { browser, page } = await connectAndroidChrome(log);
 	const shot = makeShot(page, settings.debugScreenshots);
@@ -114,7 +120,7 @@ async function runClaim(trigger = "manual") {
 
 	const isGood = result.status === "SUCCESS" || result.status === "ALREADY_CLAIMED";
 	if (!isGood) {
-		const isCookieProblem = result.status === "COOKIES_MISSING" || result.status === "COOKIES_INVALID";
+		const isCookieProblem = result.status === "COOKIES_MISSING" || result.status === "COOKIES_INVALID" || result.status === "COOKIES_EXPIRED";
 		await sendPushover({
 			title: `PixAI claim failed: ${result.status}`,
 			message: result.message || "Check the dashboard for screenshots and logs.",

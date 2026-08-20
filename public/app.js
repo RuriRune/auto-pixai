@@ -13,7 +13,7 @@ const lightboxImg = document.getElementById("lightboxImg");
 
 function badgeClass(status) {
 	if (status === "SUCCESS" || status === "ALREADY_CLAIMED") return "ok";
-	if (status === "COOKIES_MISSING" || status === "COOKIES_INVALID") return "bad";
+	if (status === "COOKIES_MISSING" || status === "COOKIES_INVALID" || status === "COOKIES_EXPIRED") return "bad";
 	if (!status) return "neutral";
 	return "warn";
 }
@@ -68,6 +68,12 @@ async function refreshCookies() {
 		cookieBadge.textContent = "Invalid";
 		cookieBadge.className = "status-badge bad";
 		cookieDetail.textContent = "cookies.json exists but has no auth cookie. Re-export a fresh session.";
+	} else if (!data.isFresh) {
+		cookieBadge.textContent = "Expired";
+		cookieBadge.className = "status-badge bad";
+		cookieDetail.textContent = data.expiry
+			? `Expired ${new Date(data.expiry).toLocaleString()} — re-export a fresh session.`
+			: "Expired — re-export a fresh session.";
 	} else {
 		cookieBadge.textContent = "Valid";
 		cookieBadge.className = "status-badge ok";
