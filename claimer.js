@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { connectAndroidChrome, disconnectAndroidChrome, forceSleepScreen } = require("./lib/androidBrowser");
+const { connectAndroidChrome, disconnectAndroidChrome, forceSleepScreen, swipeUp } = require("./lib/androidBrowser");
 const cookiesLib = require("./lib/cookies");
 const { claim } = require("./lib/claim");
 const { sendPushover } = require("./lib/notify");
@@ -80,7 +80,7 @@ async function attemptRun(settings) {
 			};
 		}
 
-		const result = await claim(page, log, shot);
+		const result = await claim(page, log, shot, swipeUp);
 
 		// Keep the session fresh regardless of outcome.
 		cookiesLib.saveCookies(await page.cookies());
