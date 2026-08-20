@@ -1,16 +1,16 @@
 {
   "name": "auto-pixai",
-  "version": "3.1.0",
-  "description": "PixAI daily credit claimer with web dashboard, cron scheduling, and Pushover notifications",
+  "version": "4.0.0",
+  "description": "PixAI daily credit claimer driving real Chrome on an Android emulator via ADB, with a web dashboard, cron scheduling, and Pushover notifications",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "license": "ISC",
   "dependencies": {
+    "puppeteer-core": "^22.6.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "node-cron": "^3.0.3",
-    "rebrowser-puppeteer": "^24.8.1"
+    "node-cron": "^3.0.3"
   }
 }

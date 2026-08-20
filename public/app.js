@@ -122,7 +122,6 @@ document.getElementById("saveScheduleBtn").addEventListener("click", async () =>
 
 const pushoverUserKeyInput = document.getElementById("pushoverUserKey");
 const pushoverAppTokenInput = document.getElementById("pushoverAppToken");
-const headlessModeSelect = document.getElementById("headlessMode");
 const notifyOnSuccessInput = document.getElementById("notifyOnSuccess");
 const debugScreenshotsInput = document.getElementById("debugScreenshots");
 const saveSettingsBtn = document.getElementById("saveSettingsBtn");
@@ -134,7 +133,6 @@ async function refreshSettings() {
 	const data = await res.json();
 	if (document.activeElement !== pushoverUserKeyInput) pushoverUserKeyInput.value = data.pushoverUserKey || "";
 	if (document.activeElement !== pushoverAppTokenInput) pushoverAppTokenInput.value = data.pushoverAppToken || "";
-	if (document.activeElement !== headlessModeSelect) headlessModeSelect.value = data.headlessMode || "auto";
 	notifyOnSuccessInput.checked = !!data.notifyOnSuccess;
 	debugScreenshotsInput.checked = !!data.debugScreenshots;
 }
@@ -146,7 +144,6 @@ saveSettingsBtn.addEventListener("click", async () => {
 		body: JSON.stringify({
 			pushoverUserKey: pushoverUserKeyInput.value.trim(),
 			pushoverAppToken: pushoverAppTokenInput.value.trim(),
-			headlessMode: headlessModeSelect.value,
 			notifyOnSuccess: notifyOnSuccessInput.checked,
 			debugScreenshots: debugScreenshotsInput.checked,
 		}),
@@ -178,6 +175,12 @@ testPushoverBtn.addEventListener("click", async () => {
 		setTimeout(() => (settingsSaved.textContent = ""), 6000);
 	}
 });
+
+const novncLink = document.getElementById("novncLink");
+if (novncLink) {
+	// Same host as the dashboard, default noVNC port for the android container.
+	novncLink.href = `http://${window.location.hostname}:6080`;
+}
 
 async function refreshAll() {
 	await Promise.all([refreshStatus(), refreshCookies(), refreshSchedule(), refreshGallery(), refreshSettings()]);

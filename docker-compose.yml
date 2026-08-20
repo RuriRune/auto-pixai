@@ -1,0 +1,39 @@
+services:
+  android:
+    image: budtmo/docker-android:emulator_11.0
+    container_name: auto-pixai-android
+    privileged: true
+    devices:
+      - /dev/kvm:/dev/kvm
+    environment:
+      - EMULATOR_DEVICE=Samsung Galaxy S10
+      - WEB_VNC=true
+    ports:
+      # noVNC — open http://<host>:6080 in a browser to watch/manually
+      # interact with the device if ever needed.
+      - "6080:6080"
+      # ADB
+      - "5555:5555"
+    restart: unless-stopped
+
+  auto-pixai:
+    build: .
+    container_name: auto-pixai
+    depends_on:
+      - android
+    environment:
+      - ANDROID_ADB_HOST=android
+      - ANDROID_ADB_PORT=5555
+      - DATA_PATH=/data/
+      - PORT=8080
+      # - TZ=Europe/London
+      # - PUSHOVER_USER_KEY=
+      # - PUSHOVER_APP_TOKEN=
+      # - NOTIFY_ON_SUCCESS=false
+      # - DEBUG_SCREENSHOTS=true
+      # - DEFAULT_CRON=0 9 * * *
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { launchBrowser } = require("./lib/browser");
+const { connectAndroidChrome, disconnectAndroidChrome } = require("./lib/androidBrowser");
 const cookiesLib = require("./lib/cookies");
 const { claim } = require("./lib/claim");
 const { sendPushover } = require("./lib/notify");
@@ -25,8 +25,8 @@ function makeShot(page, debugShots) {
 	};
 }
 
-async function attemptRun(headless, settings) {
-	log("INFO", `Starting attempt (headless=${headless})`);
+async function attemptRun(settings) {
+	log("INFO", "Starting attempt (real Android Chrome via ADB)");
 
 	if (!cookiesLib.cookieFileExists()) {
 		return {
@@ -43,7 +43,7 @@ async function attemptRun(headless, settings) {
 		};
 	}
 
-	const { browser, page } = await launchBrowser(headless);
+	const { browser, page } = await connectAndroidChrome(log);
 	const shot = makeShot(page, settings.debugScreenshots);
 	try {
 		await page.goto(HOME_URL, { waitUntil: "networkidle2" });
@@ -65,7 +65,7 @@ async function attemptRun(headless, settings) {
 
 		return result;
 	} finally {
-		await browser.close();
+		await disconnectAndroidChrome(browser, log);
 	}
 }
 
@@ -74,33 +74,14 @@ async function runClaim(trigger = "manual") {
 	log("INFO", `Run triggered (${trigger})`);
 	let result;
 
-	// Visible (Xvfb) first: headed Chrome passes Turnstile's fingerprint
-	// check far more often than headless, and Xvfb is already in the image,
-	// so there's no cost to defaulting to it. Headless is only a fallback
-	// (e.g. if the X display is broken) or when forced via settings.
-	const tryVisible = settings.headlessMode !== "headless";
-	const tryHeadless = settings.headlessMode !== "visible";
-
-	if (tryVisible) {
-		try {
-			result = await attemptRun(false, settings);
-		} catch (e) {
-			log("ERROR", `Visible attempt failed: ${e.message}`);
-			result = { status: "ERROR", message: e.message };
-		}
-	}
-
-	const needsFallback =
-		tryHeadless && (result === undefined || result.status === "TURNSTILE_BLOCKED" || result.status === "ERROR");
-
-	if (needsFallback) {
-		log("INFO", "Retrying with a headless browser...");
-		try {
-			result = await attemptRun(true, settings);
-		} catch (e) {
-			log("ERROR", `Headless attempt failed: ${e.message}`);
-			result = { status: "ERROR", message: e.message };
-		}
+	try {
+		result = await attemptRun(settings);
+	} catch (e) {
+		log("ERROR", `Attempt failed: ${e.message}`);
+		result = {
+			status: "ERROR",
+			message: `${e.message} (check that the android container is running and reachable, and that /dev/kvm is available on the host)`,
+		};
 	}
 
 	const entry = {

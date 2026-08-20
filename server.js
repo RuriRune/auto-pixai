@@ -86,16 +86,11 @@ app.get("/api/settings", (req, res) => {
 
 app.post("/api/settings", (req, res) => {
 	const body = req.body || {};
-	const allowedHeadlessModes = ["auto", "headless", "visible"];
-	if (body.headlessMode && !allowedHeadlessModes.includes(body.headlessMode)) {
-		return res.status(400).json({ error: `headlessMode must be one of: ${allowedHeadlessModes.join(", ")}` });
-	}
 	const next = saveSettings({
 		pushoverUserKey: body.pushoverUserKey ?? undefined,
 		pushoverAppToken: body.pushoverAppToken ?? undefined,
 		notifyOnSuccess: typeof body.notifyOnSuccess === "boolean" ? body.notifyOnSuccess : undefined,
 		debugScreenshots: typeof body.debugScreenshots === "boolean" ? body.debugScreenshots : undefined,
-		headlessMode: body.headlessMode ?? undefined,
 	});
 	res.json(next);
 });

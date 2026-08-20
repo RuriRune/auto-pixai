@@ -1,0 +1,12 @@
+# Force LF regardless of local core.autocrlf settings. Matters most for
+# anything with a shebang (#!/bin/bash) — CRLF there breaks the interpreter
+# line on Linux. Also keeps Dockerfile/YAML/JS diffs clean across OSes.
+* text=auto eol=lf
+
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
