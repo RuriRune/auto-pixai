@@ -11,8 +11,24 @@ const { loadSettings } = require("./lib/settings");
 const HOME_URL = "https://pixai.art/";
 const DATA_PATH = cookiesLib.DATA_PATH;
 
+// Individual steps (adb calls, DevTools fetch, Turnstile waits) are already
+// bounded, but nothing previously caught a genuine end-to-end hang (e.g. a
+// stuck CDP call). Without this, a hung run would leave isRunning stuck
+// true forever and silently block every future scheduled/manual run.
+// Generous margin above the worst realistic case (Turnstile needing all
+// its retry rounds is roughly 90-120s).
+const RUN_TIMEOUT_MS = 180000;
+
 function log(tag, msg) {
 	console.log(`[${tag}] ${msg}`);
+}
+
+function withTimeout(promise, ms, label) {
+	let timer;
+	const timeout = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+	});
+	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function makeShot(page, debugShots) {
@@ -75,12 +91,15 @@ async function runClaim(trigger = "manual") {
 	let result;
 
 	try {
-		result = await attemptRun(settings);
+		result = await withTimeout(attemptRun(settings), RUN_TIMEOUT_MS, "Run");
 	} catch (e) {
 		log("ERROR", `Attempt failed: ${e.message}`);
+		const isTimeout = e.message.includes("timed out after");
 		result = {
-			status: "ERROR",
-			message: `${e.message} (check the Android device is powered on, connected to WiFi, and reachable at ANDROID_ADB_HOST:ANDROID_ADB_PORT)`,
+			status: isTimeout ? "TIMEOUT" : "ERROR",
+			message: isTimeout
+				? e.message
+				: `${e.message} (check the Android device is powered on, connected to WiFi, and reachable at ANDROID_ADB_HOST:ANDROID_ADB_PORT)`,
 		};
 	}
 
