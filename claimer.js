@@ -16,7 +16,7 @@ const cookiesLib = require("./lib/cookies");
 const { claimViaAdbOnly } = require("./lib/claim");
 const { sendPushover } = require("./lib/notify");
 const { recordRun } = require("./lib/status");
-const { loadSettings } = require("./lib/settings");
+const { loadSettings, pushoverConfigured } = require("./lib/settings");
 const runState = require("./lib/runState");
 const { formatDuration } = require("./lib/format");
 
@@ -187,22 +187,30 @@ async function runClaim(trigger = "manual") {
 	log("RESULT", JSON.stringify(entry));
 
 	const isGood = result.status === "SUCCESS" || result.status === "ALREADY_CLAIMED";
-	if (!isGood && result.status !== "CANCELLED") {
-		const isCookieProblem = result.status === "COOKIES_MISSING" || result.status === "COOKIES_INVALID" || result.status === "COOKIES_EXPIRED";
-		await sendPushover({
-			title: `PixAI claim failed: ${result.status}`,
-			message: result.message || "Check the dashboard for screenshots and logs.",
-			priority: isCookieProblem ? 1 : 0,
-			userKey: settings.pushoverUserKey,
-			appToken: settings.pushoverAppToken,
-		});
-	} else if (isGood && settings.notifyOnSuccess) {
-		await sendPushover({
-			title: `PixAI claim: ${result.status}`,
-			message: result.message || "",
-			userKey: settings.pushoverUserKey,
-			appToken: settings.pushoverAppToken,
-		});
+	const shouldNotify = (!isGood && result.status !== "CANCELLED") || (isGood && settings.notifyOnSuccess);
+
+	if (shouldNotify) {
+		if (!pushoverConfigured(settings)) {
+			log("PUSHOVER", "Notification skipped — no Pushover user key / app token configured.");
+		} else {
+			const isCookieProblem =
+				result.status === "COOKIES_MISSING" || result.status === "COOKIES_INVALID" || result.status === "COOKIES_EXPIRED";
+			const res = await sendPushover({
+				title: isGood ? `PixAI claim: ${result.status}` : `PixAI claim failed: ${result.status}`,
+				message: result.message || (isGood ? "" : "Check the dashboard for screenshots and logs."),
+				priority: !isGood && isCookieProblem ? 1 : 0,
+				userKey: settings.pushoverUserKey,
+				appToken: settings.pushoverAppToken,
+			});
+			if (res && res.status === 1) {
+				log("PUSHOVER", "Notification sent.");
+			} else {
+				const reason = res && (res.reason || res.error || (res.errors && res.errors.join(", ")));
+				log("PUSHOVER", `Notification FAILED: ${reason || "unknown error"}`);
+			}
+		}
+	} else if (isGood) {
+		log("PUSHOVER", 'Notification skipped — run succeeded and "notify on success" is off.');
 	}
 
 	return entry;
