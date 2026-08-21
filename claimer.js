@@ -90,9 +90,17 @@ async function attemptRun(settings, signal) {
 	const shot = makeShot(page, settings.debugScreenshots);
 	try {
 		throwIfCancelled(signal);
-		await page.goto(HOME_URL, { waitUntil: "networkidle2" });
+		// networkidle2 can never settle on a page with long-lived
+		// connections (analytics beacons, websockets), and Puppeteer's
+		// default navigation timeout doesn't always apply cleanly over a
+		// remote CDP link — bound both explicitly and use a condition that
+		// actually resolves. The claim flow does its own waiting for the
+		// modal afterward, so we don't need the network to be fully idle.
+		log("INFO", "Loading pixai.art...");
+		await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
 		await cookiesLib.applyCookies(page, cookies);
-		await page.reload({ waitUntil: "networkidle2" });
+		log("INFO", "Reloading with session cookies applied...");
+		await page.reload({ waitUntil: "domcontentloaded", timeout: 45000 });
 
 		if (!(await cookiesLib.hasAuthCookie(page))) {
 			await shot("cookies_rejected");
