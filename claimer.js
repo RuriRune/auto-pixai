@@ -8,20 +8,22 @@ const { sendPushover } = require("./lib/notify");
 const { recordRun } = require("./lib/status");
 const { loadSettings } = require("./lib/settings");
 const runState = require("./lib/runState");
+const { formatDuration } = require("./lib/format");
 
 const HOME_URL = "https://pixai.art/";
 const DATA_PATH = cookiesLib.DATA_PATH;
 
-// Individual steps (adb calls, DevTools fetch, Turnstile waits) are already
-// bounded, but nothing previously caught a genuine end-to-end hang (e.g. a
-// stuck CDP call). Without this, a hung run would leave isRunning stuck
-// true forever and silently block every future scheduled/manual run.
-// Worst-case realistic budget: Chrome cold-launch + page load + reload
-// (~30-50s) + the Daily Claim modal appearing (up to 90s on this device)
-// + Turnstile resolving (up to ~35s with retries) + the tap/click retry
-// loop (~10s) can approach 200s on a slow run — 300s gives real margin
-// above that rather than just above the "everything goes smoothly" case.
-const RUN_TIMEOUT_MS = 300000;
+// Individual steps are bounded, but this catches a genuine end-to-end hang
+// (e.g. a stuck CDP call) that would otherwise leave isRunning stuck true
+// forever and silently block every future scheduled/manual run.
+//
+// This device is slow, and the budget has to reflect that rather than an
+// optimistic best case: Chrome cold-launch + page load + reload, the Daily
+// Claim modal appearing (around a minute, allowed up to 3), Turnstile
+// resolving (up to ~35s with retries), and the tap/click retry loop. 10
+// minutes is deliberately generous — the point of this timeout is to
+// recover from a true hang, not to cut short a slow-but-working run.
+const RUN_TIMEOUT_MS = 600000;
 
 class CancelledError extends Error {
 	constructor() {
@@ -42,7 +44,7 @@ function log(tag, msg) {
 function withTimeout(promise, ms, label) {
 	let timer;
 	const timeout = new Promise((_, reject) => {
-		timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+		timer = setTimeout(() => reject(new Error(`${label} timed out after ${formatDuration(ms)}`)), ms);
 	});
 	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -97,10 +99,10 @@ async function attemptRun(settings, signal) {
 		// actually resolves. The claim flow does its own waiting for the
 		// modal afterward, so we don't need the network to be fully idle.
 		log("INFO", "Loading pixai.art...");
-		await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
+		await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
 		await cookiesLib.applyCookies(page, cookies);
 		log("INFO", "Reloading with session cookies applied...");
-		await page.reload({ waitUntil: "domcontentloaded", timeout: 45000 });
+		await page.reload({ waitUntil: "domcontentloaded", timeout: 120000 });
 
 		if (!(await cookiesLib.hasAuthCookie(page))) {
 			await shot("cookies_rejected");
