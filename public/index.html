@@ -10,8 +10,19 @@
 <div class="wrap">
 	<header>
 		<h1>PixAI Auto-Claimer</h1>
-		<button id="runBtn">Run now</button>
+		<div class="row">
+			<button id="runBtn">Run now</button>
+			<button id="cancelBtn" class="secondary danger" style="display:none;">Cancel run</button>
+		</div>
 	</header>
+
+	<section class="card" id="liveProgressCard" style="display:none;">
+		<h2>Run in progress</h2>
+		<div class="row" style="align-items: baseline; gap: 16px;">
+			<div class="live-timer" id="liveTimer">0:00</div>
+			<div id="liveStep" class="muted">Starting…</div>
+		</div>
+	</section>
 
 	<section class="cards">
 		<div class="card">

@@ -131,6 +131,20 @@ button.secondary {
 }
 button.secondary:hover:not(:disabled) { border-color: var(--accent); }
 
+button.danger {
+	border-color: var(--bad);
+	color: var(--bad);
+}
+button.danger:hover:not(:disabled) { background: rgba(245,84,77,0.1); }
+
+.live-timer {
+	font-family: monospace;
+	font-size: 28px;
+	font-weight: 700;
+	color: var(--accent);
+	min-width: 70px;
+}
+
 .settings-grid {
 	display: grid;
 	grid-template-columns: 220px 1fr;

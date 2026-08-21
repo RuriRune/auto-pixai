@@ -6,14 +6,34 @@ const cookieDetail = document.getElementById("cookieDetail");
 const cronInput = document.getElementById("cronInput");
 const scheduleSaved = document.getElementById("scheduleSaved");
 const runBtn = document.getElementById("runBtn");
+const cancelBtn = document.getElementById("cancelBtn");
+const liveProgressCard = document.getElementById("liveProgressCard");
+const liveTimer = document.getElementById("liveTimer");
+const liveStep = document.getElementById("liveStep");
 const historyBody = document.querySelector("#historyTable tbody");
 const gallery = document.getElementById("gallery");
 const lightbox = document.getElementById("lightbox");
 const lightboxImg = document.getElementById("lightboxImg");
 
+let runStartedAt = null;
+
+function formatElapsed(ms) {
+	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+	const m = Math.floor(totalSeconds / 60);
+	const s = totalSeconds % 60;
+	return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// Ticks every second independent of the API poll interval, so the timer
+// feels smooth rather than jumping in 2s increments.
+setInterval(() => {
+	if (runStartedAt) liveTimer.textContent = formatElapsed(Date.now() - runStartedAt);
+}, 1000);
+
 function badgeClass(status) {
 	if (status === "SUCCESS" || status === "ALREADY_CLAIMED") return "ok";
 	if (status === "COOKIES_MISSING" || status === "COOKIES_INVALID" || status === "COOKIES_EXPIRED") return "bad";
+	if (status === "CANCELLED") return "neutral";
 	if (!status) return "neutral";
 	return "warn";
 }
@@ -37,6 +57,17 @@ async function refreshStatus() {
 
 	runBtn.disabled = data.isRunning;
 	runBtn.textContent = data.isRunning ? "Running…" : "Run now";
+	cancelBtn.style.display = data.isRunning ? "" : "none";
+
+	if (data.isRunning) {
+		liveProgressCard.style.display = "";
+		runStartedAt = data.runStartedAt || runStartedAt;
+		liveStep.textContent = data.currentStep || "Starting…";
+		if (runStartedAt) liveTimer.textContent = formatElapsed(Date.now() - runStartedAt);
+	} else {
+		liveProgressCard.style.display = "none";
+		runStartedAt = null;
+	}
 
 	historyBody.innerHTML = "";
 	(data.history || []).forEach((h) => {
@@ -115,6 +146,18 @@ runBtn.addEventListener("click", async () => {
 	}
 });
 
+cancelBtn.addEventListener("click", async () => {
+	cancelBtn.disabled = true;
+	cancelBtn.textContent = "Cancelling…";
+	try {
+		await fetch("/api/cancel", { method: "POST" });
+	} finally {
+		cancelBtn.disabled = false;
+		cancelBtn.textContent = "Cancel run";
+		await refreshAll();
+	}
+});
+
 document.getElementById("saveScheduleBtn").addEventListener("click", async () => {
 	const res = await fetch("/api/schedule", {
 		method: "POST",
@@ -187,4 +230,4 @@ async function refreshAll() {
 }
 
 refreshAll();
-setInterval(refreshAll, 5000);
+setInterval(refreshAll, 2000);

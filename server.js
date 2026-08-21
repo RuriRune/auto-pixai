@@ -9,6 +9,7 @@ const { readStatus } = require("./lib/status");
 const { loadScheduleExpr, saveScheduleExpr } = require("./lib/schedule");
 const { loadSettings, saveSettings } = require("./lib/settings");
 const { sendPushover } = require("./lib/notify");
+const runState = require("./lib/runState");
 const {
 	DATA_PATH,
 	cookieFileExists,
@@ -48,7 +49,14 @@ async function triggerRun(trigger) {
 
 // ── API ──────────────────────────────────────────────────────────────────
 app.get("/api/status", (req, res) => {
-	res.json({ ...readStatus(), isRunning });
+	const live = runState.getState();
+	res.json({ ...readStatus(), isRunning, currentStep: live.step, runStartedAt: live.startedAt });
+});
+
+app.post("/api/cancel", (req, res) => {
+	const cancelled = runState.cancel();
+	if (!cancelled) return res.status(409).json({ error: "No run is currently in progress." });
+	res.json({ ok: true });
 });
 
 app.get("/api/cookies", (req, res) => {
