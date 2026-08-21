@@ -1,9 +1,18 @@
 const fs = require("fs");
 const path = require("path");
 
-const { connectAndroidChrome, disconnectAndroidChrome, forceSleepScreen, swipeUp, tapByText } = require("./lib/androidBrowser");
+const {
+	connectAndroidChrome,
+	disconnectAndroidChrome,
+	forceSleepScreen,
+	swipeUp,
+	tapByText,
+	screenHasText,
+	waitForTextOnScreen,
+	screencap,
+} = require("./lib/androidBrowser");
 const cookiesLib = require("./lib/cookies");
-const { claim } = require("./lib/claim");
+const { claim, claimViaAdbOnly } = require("./lib/claim");
 const { sendPushover } = require("./lib/notify");
 const { recordRun } = require("./lib/status");
 const { loadSettings } = require("./lib/settings");
@@ -59,6 +68,18 @@ function makeShot(page, debugShots) {
 	};
 }
 
+// Screenshots for the ADB-only path — pulls a real device screencap
+// instead of going through CDP, so the dashboard gallery still works.
+function makeAdbShot(debugShots) {
+	return async (name) => {
+		if (!debugShots) return;
+		try {
+			fs.mkdirSync(DATA_PATH, { recursive: true });
+			await screencap(log, path.join(DATA_PATH, `${name}.png`));
+		} catch (_) {}
+	};
+}
+
 function throwIfCancelled(signal) {
 	if (signal && signal.aborted) throw new CancelledError();
 }
@@ -88,7 +109,28 @@ async function attemptRun(settings, signal) {
 	}
 
 	throwIfCancelled(signal);
-	const { browser, page } = await connectAndroidChrome(log, signal);
+
+	let browser;
+	let page;
+	try {
+		({ browser, page } = await connectAndroidChrome(log, signal));
+	} catch (e) {
+		if (e.message === "cancelled") throw e;
+		// The page is loaded and the button is on screen — a failed DevTools
+		// handshake shouldn't mean giving up on the run. Fall back to
+		// driving the device purely through ADB and the accessibility tree.
+		log("INFO", `DevTools connection failed (${e.message}) — falling back to the ADB-only claim path.`);
+		const adbShot = makeAdbShot(settings.debugScreenshots);
+		const result = await claimViaAdbOnly(
+			log,
+			adbShot,
+			{ waitForTextOnScreen, screenHasText, tapByText, swipeUp },
+			signal
+		);
+		await forceSleepScreen(log);
+		return result;
+	}
+
 	const shot = makeShot(page, settings.debugScreenshots);
 	try {
 		throwIfCancelled(signal);
