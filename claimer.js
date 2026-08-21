@@ -2,8 +2,9 @@ const fs = require("fs");
 const path = require("path");
 
 const {
-	connectAndroidChrome,
-	disconnectAndroidChrome,
+	prepareDevice,
+	connectCdpForCookies,
+	detachCdp,
 	forceSleepScreen,
 	swipeUp,
 	tapByText,
@@ -12,14 +13,13 @@ const {
 	screencap,
 } = require("./lib/androidBrowser");
 const cookiesLib = require("./lib/cookies");
-const { claim, claimViaAdbOnly } = require("./lib/claim");
+const { claimViaAdbOnly } = require("./lib/claim");
 const { sendPushover } = require("./lib/notify");
 const { recordRun } = require("./lib/status");
 const { loadSettings } = require("./lib/settings");
 const runState = require("./lib/runState");
 const { formatDuration } = require("./lib/format");
 
-const HOME_URL = "https://pixai.art/";
 const DATA_PATH = cookiesLib.DATA_PATH;
 
 // Individual steps are bounded, but this catches a genuine end-to-end hang
@@ -58,16 +58,6 @@ function withTimeout(promise, ms, label) {
 	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function makeShot(page, debugShots) {
-	return async (name) => {
-		if (!debugShots) return;
-		try {
-			fs.mkdirSync(DATA_PATH, { recursive: true });
-			await page.screenshot({ path: path.join(DATA_PATH, `${name}.png`) });
-		} catch (_) {}
-	};
-}
-
 // Screenshots for the ADB-only path — pulls a real device screencap
 // instead of going through CDP, so the dashboard gallery still works.
 function makeAdbShot(debugShots) {
@@ -85,87 +75,66 @@ function throwIfCancelled(signal) {
 }
 
 async function attemptRun(settings, signal) {
-	log("INFO", "Starting attempt (real Android Chrome via ADB)");
+	log("INFO", "Starting attempt (ADB-driven on real Android Chrome)");
 
+	// Cookie state is informational here rather than blocking: the phone's
+	// Chrome holds its own logged-in session, so a stale/missing
+	// cookies.json doesn't necessarily mean the device can't claim. Warn
+	// loudly, but let the run proceed and find out on-screen.
 	if (!cookiesLib.cookieFileExists()) {
-		return {
-			status: "COOKIES_MISSING",
-			message: `No cookie file at ${cookiesLib.COOKIE_FILE}. Export a logged-in session and place it there.`,
-		};
-	}
-
-	const cookies = cookiesLib.loadCookies();
-	if (!cookies.length || !cookiesLib.hasAuthCookieInList(cookies)) {
-		return {
-			status: "COOKIES_INVALID",
-			message: "cookies.json has no user_token auth cookie — it's analytics-only or malformed. Re-export a fresh session.",
-		};
-	}
-	if (!cookiesLib.isAuthCookieFresh(cookies)) {
-		return {
-			status: "COOKIES_EXPIRED",
-			message: `The user_token cookie expired ${cookiesLib.authCookieExpiry(cookies)}. Re-export a fresh session and replace cookies.json.`,
-		};
+		log("INFO", "No cookies.json present — relying on the device's own Chrome session.");
+	} else {
+		try {
+			const cookies = cookiesLib.loadCookies();
+			if (!cookiesLib.hasAuthCookieInList(cookies)) {
+				log("INFO", "cookies.json has no auth cookie — relying on the device's own Chrome session.");
+			} else if (!cookiesLib.isAuthCookieFresh(cookies)) {
+				log("INFO", `Saved cookie expired ${cookiesLib.authCookieExpiry(cookies)} — relying on the device's own Chrome session.`);
+			}
+		} catch (_) {}
 	}
 
 	throwIfCancelled(signal);
+	await prepareDevice(log, signal);
 
-	let browser;
-	let page;
+	const shot = makeAdbShot(settings.debugScreenshots);
 	try {
-		({ browser, page } = await connectAndroidChrome(log, signal));
-	} catch (e) {
-		if (e.message === "cancelled") throw e;
-		// The page is loaded and the button is on screen — a failed DevTools
-		// handshake shouldn't mean giving up on the run. Fall back to
-		// driving the device purely through ADB and the accessibility tree.
-		log("INFO", `DevTools connection failed (${e.message}) — falling back to the ADB-only claim path.`);
-		const adbShot = makeAdbShot(settings.debugScreenshots);
+		throwIfCancelled(signal);
 		const result = await claimViaAdbOnly(
 			log,
-			adbShot,
+			shot,
 			{ waitForTextOnScreen, screenHasText, tapByText, swipeUp },
 			signal
 		);
-		await forceSleepScreen(log);
-		return result;
-	}
 
-	const shot = makeShot(page, settings.debugScreenshots);
-	try {
-		throwIfCancelled(signal);
-		// networkidle2 can never settle on a page with long-lived
-		// connections (analytics beacons, websockets), and Puppeteer's
-		// default navigation timeout doesn't always apply cleanly over a
-		// remote CDP link — bound both explicitly and use a condition that
-		// actually resolves. The claim flow does its own waiting for the
-		// modal afterward, so we don't need the network to be fully idle.
-		log("INFO", "Loading pixai.art...");
-		await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
-		await cookiesLib.applyCookies(page, cookies);
-		log("INFO", "Reloading with session cookies applied...");
-		await page.reload({ waitUntil: "domcontentloaded", timeout: 120000 });
-
-		if (!(await cookiesLib.hasAuthCookie(page))) {
-			await shot("cookies_rejected");
-			return {
-				status: "COOKIES_INVALID",
-				message: "Site rejected the saved cookies (expired or invalidated). Re-export a fresh session.",
-			};
+		// Best-effort only: a CDP connection purely to read back fresh
+		// session cookies so the saved session keeps rolling forward.
+		// Claiming already succeeded at this point — any failure here is
+		// logged and ignored rather than affecting the run's outcome.
+		if (result.status === "SUCCESS" || result.status === "ALREADY_CLAIMED") {
+			let browser;
+			try {
+				log("INFO", "Refreshing saved cookies from the device (optional)...");
+				const conn = await connectCdpForCookies(log);
+				browser = conn.browser;
+				const fresh = await conn.page.cookies();
+				if (cookiesLib.hasAuthCookieInList(fresh)) {
+					cookiesLib.saveCookies(fresh);
+					log("INFO", "Saved cookies refreshed from the device session.");
+				} else {
+					log("INFO", "Device session had no auth cookie to save — leaving cookies.json as-is.");
+				}
+			} catch (e) {
+				log("INFO", `Cookie refresh skipped (${e.message}) — claim itself was unaffected.`);
+			} finally {
+				await detachCdp(browser, log);
+			}
 		}
-
-		throwIfCancelled(signal);
-		const result = await claim(page, log, shot, swipeUp, tapByText, signal);
-
-		// Keep the session fresh regardless of outcome.
-		cookiesLib.saveCookies(await page.cookies());
 
 		return result;
 	} finally {
-		// Runs on cancellation too (the throw propagates through this try
-		// block), so a cancelled run puts the phone back to sleep exactly
-		// like a completed one — no separate cleanup path needed.
-		await disconnectAndroidChrome(browser, log);
+		// Runs on success, failure, and cancellation alike.
+		await forceSleepScreen(log);
 	}
 }
 
@@ -184,7 +153,7 @@ async function runClaim(trigger = "manual") {
 			log("INFO", "Run was cancelled.");
 			result = { status: "CANCELLED", message: "Cancelled by user." };
 			// If cancellation happened before a browser connection was ever
-			// established, disconnectAndroidChrome's finally block never ran —
+			// established, attemptRun's own cleanup never ran —
 			// make sure the screen doesn't stay stuck awake regardless.
 			await forceSleepScreen(log);
 		} else {
@@ -197,7 +166,7 @@ async function runClaim(trigger = "manual") {
 					: `${e.message} (check the Android device is powered on, connected to WiFi, and reachable at ANDROID_ADB_HOST:ANDROID_ADB_PORT)`,
 			};
 			if (isTimeout) {
-				// The stuck attempt's own cleanup (disconnectAndroidChrome) may
+				// The stuck attempt's own cleanup may
 				// never run — it's still out there hung, not cancelled. Don't
 				// leave the screen lit indefinitely waiting for it.
 				log("INFO", "Run timed out — attempting to put the screen back to sleep independently.");
