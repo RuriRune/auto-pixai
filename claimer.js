@@ -15,9 +15,12 @@ const DATA_PATH = cookiesLib.DATA_PATH;
 // bounded, but nothing previously caught a genuine end-to-end hang (e.g. a
 // stuck CDP call). Without this, a hung run would leave isRunning stuck
 // true forever and silently block every future scheduled/manual run.
-// Generous margin above the worst realistic case (Turnstile needing all
-// its retry rounds is roughly 90-120s).
-const RUN_TIMEOUT_MS = 180000;
+// Worst-case realistic budget: Chrome cold-launch + page load + reload
+// (~30-50s) + the Daily Claim modal appearing (up to 90s on this device)
+// + Turnstile resolving (up to ~35s with retries) + the tap/click retry
+// loop (~10s) can approach 200s on a slow run — 300s gives real margin
+// above that rather than just above the "everything goes smoothly" case.
+const RUN_TIMEOUT_MS = 300000;
 
 function log(tag, msg) {
 	console.log(`[${tag}] ${msg}`);
