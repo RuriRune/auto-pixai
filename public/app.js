@@ -183,6 +183,7 @@ document.getElementById("saveScheduleBtn").addEventListener("click", async () =>
 const pushoverUserKeyInput = document.getElementById("pushoverUserKey");
 const pushoverAppTokenInput = document.getElementById("pushoverAppToken");
 const notifyOnSuccessInput = document.getElementById("notifyOnSuccess");
+const notifyOnStartInput = document.getElementById("notifyOnStart");
 const debugScreenshotsInput = document.getElementById("debugScreenshots");
 const saveSettingsBtn = document.getElementById("saveSettingsBtn");
 const testPushoverBtn = document.getElementById("testPushoverBtn");
@@ -194,6 +195,7 @@ async function refreshSettings() {
 	if (document.activeElement !== pushoverUserKeyInput) pushoverUserKeyInput.value = data.pushoverUserKey || "";
 	if (document.activeElement !== pushoverAppTokenInput) pushoverAppTokenInput.value = data.pushoverAppToken || "";
 	notifyOnSuccessInput.checked = !!data.notifyOnSuccess;
+	notifyOnStartInput.checked = !!data.notifyOnStart;
 	debugScreenshotsInput.checked = !!data.debugScreenshots;
 }
 
@@ -205,6 +207,7 @@ saveSettingsBtn.addEventListener("click", async () => {
 			pushoverUserKey: pushoverUserKeyInput.value.trim(),
 			pushoverAppToken: pushoverAppTokenInput.value.trim(),
 			notifyOnSuccess: notifyOnSuccessInput.checked,
+			notifyOnStart: notifyOnStartInput.checked,
 			debugScreenshots: debugScreenshotsInput.checked,
 		}),
 	});

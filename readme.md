@@ -106,6 +106,28 @@ so as long as the container runs on schedule you shouldn't need to re-export
 often. A high-priority Pushover alert fires if it ever goes missing/invalid
 (when configured).
 
+## Pushover
+
+Set your Pushover user key and app token in the dashboard's **Settings**
+section, then click **Send test notification** to confirm delivery. By
+default it only notifies on problems (missing/expired cookies, claim button
+not found, device unreachable, errors). Cancelled runs never notify.
+
+Two optional toggles:
+
+- **Notify on success too** — also ping on successful claims. Off by
+  default, which is why a successful run can look "silent" while failures
+  come through.
+- **Notify when a run starts** — a heartbeat at the start of every run, sent
+  at Pushover priority -1 so it arrives silently. Its *absence* is the
+  signal: if the expected daily message doesn't arrive, something upstream
+  broke (container stopped, host down, schedule not firing). This only helps
+  if you'd notice a missing message — for reliable detection of a dead
+  container, point an uptime monitor at the dashboard as well.
+
+Note that the environment variables only *seed* these settings on first run.
+Once `settings.json` exists, the dashboard values win.
+
 ## If a step stops matching the site
 
 Check the relevant screenshot in the dashboard gallery (e.g.

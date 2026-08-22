@@ -146,6 +146,25 @@ async function runClaim(trigger = "manual") {
 	const controller = runState.startRun();
 	const signal = controller.signal;
 
+	// A heartbeat at the start of each run: its absence is the signal that
+	// something upstream broke (container stopped, host down, schedule not
+	// firing). Sent at Pushover priority -1 so a routine daily heartbeat
+	// arrives silently rather than buzzing.
+	if (settings.notifyOnStart) {
+		if (!pushoverConfigured(settings)) {
+			log("PUSHOVER", "Start notification skipped — no Pushover user key / app token configured.");
+		} else {
+			const res = await sendPushover({
+				title: "PixAI claim starting",
+				message: `Run triggered (${trigger}).`,
+				priority: -1,
+				userKey: settings.pushoverUserKey,
+				appToken: settings.pushoverAppToken,
+			});
+			log("PUSHOVER", res && res.status === 1 ? "Start notification sent." : "Start notification failed.");
+		}
+	}
+
 	try {
 		result = await withTimeout(attemptRun(settings, signal), RUN_TIMEOUT_MS, "Run");
 	} catch (e) {

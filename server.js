@@ -157,6 +157,7 @@ app.post("/api/settings", (req, res) => {
 		pushoverUserKey: body.pushoverUserKey ?? undefined,
 		pushoverAppToken: body.pushoverAppToken ?? undefined,
 		notifyOnSuccess: typeof body.notifyOnSuccess === "boolean" ? body.notifyOnSuccess : undefined,
+		notifyOnStart: typeof body.notifyOnStart === "boolean" ? body.notifyOnStart : undefined,
 		debugScreenshots: typeof body.debugScreenshots === "boolean" ? body.debugScreenshots : undefined,
 	});
 	res.json(next);
