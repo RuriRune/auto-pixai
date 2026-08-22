@@ -10,6 +10,7 @@ const { loadScheduleExpr, saveScheduleExpr } = require("./lib/schedule");
 const { loadSettings, saveSettings } = require("./lib/settings");
 const { sendPushover } = require("./lib/notify");
 const runState = require("./lib/runState");
+const { formatDuration } = require("./lib/format");
 const {
 	DATA_PATH,
 	cookieFileExists,
@@ -34,28 +35,83 @@ function scheduleJob(expr) {
 	console.log(`[SCHEDULE] Active: ${expr}${process.env.TZ ? ` (${process.env.TZ})` : ""}`);
 }
 
+// The phone's wireless ADB daemon drops after idle and comes back on its
+// own, so a device-unreachable failure is usually transient — retry it
+// automatically after a delay rather than waiting for the next scheduled
+// run (or a manual re-click) the following day.
+const RETRY_DELAY_MS = 15 * 60 * 1000;
+const MAX_AUTO_RETRIES = 3;
+let retryTimer = null;
+let retryCount = 0;
+let retryAt = null;
+
+function clearPendingRetry(reason) {
+	if (retryTimer) {
+		clearTimeout(retryTimer);
+		retryTimer = null;
+		retryAt = null;
+		if (reason) console.log(`[RETRY] Pending retry cancelled (${reason}).`);
+	}
+}
+
+function scheduleRetry() {
+	clearPendingRetry();
+	retryCount += 1;
+	retryAt = Date.now() + RETRY_DELAY_MS;
+	console.log(`[RETRY] Device unreachable — retry ${retryCount} of ${MAX_AUTO_RETRIES} scheduled in ${formatDuration(RETRY_DELAY_MS)}.`);
+	retryTimer = setTimeout(() => {
+		retryTimer = null;
+		retryAt = null;
+		triggerRun("retry");
+	}, RETRY_DELAY_MS);
+	// Don't hold the process open just for a pending retry.
+	if (retryTimer.unref) retryTimer.unref();
+}
+
 async function triggerRun(trigger) {
 	if (isRunning) {
 		console.log("[SERVER] Run already in progress, skipping.");
 		return { skipped: true };
 	}
+	// A new run supersedes any queued retry.
+	clearPendingRetry("a new run started");
 	isRunning = true;
+	let result;
 	try {
-		return await runClaim(trigger);
+		result = await runClaim(trigger);
+		return result;
 	} finally {
 		isRunning = false;
+
+		if (result && result.status === "DEVICE_UNREACHABLE") {
+			if (retryCount < MAX_AUTO_RETRIES) {
+				scheduleRetry();
+			} else {
+				console.log(`[RETRY] Device still unreachable after ${MAX_AUTO_RETRIES} retries — giving up until the next scheduled run.`);
+				retryCount = 0;
+			}
+		} else {
+			// Any non-connection outcome means the device was reachable —
+			// reset the counter so a future blip gets a fresh set of retries.
+			retryCount = 0;
+		}
 	}
 }
 
 // ── API ──────────────────────────────────────────────────────────────────
 app.get("/api/status", (req, res) => {
 	const live = runState.getState();
-	res.json({ ...readStatus(), isRunning, currentStep: live.step, runStartedAt: live.startedAt });
+	res.json({ ...readStatus(), isRunning, currentStep: live.step, runStartedAt: live.startedAt, retryAt, retryCount, maxRetries: MAX_AUTO_RETRIES });
 });
 
 app.post("/api/cancel", (req, res) => {
+	const hadRetry = !!retryTimer;
+	clearPendingRetry("cancelled by user");
 	const cancelled = runState.cancel();
-	if (!cancelled) return res.status(409).json({ error: "No run is currently in progress." });
+	if (!cancelled) {
+		if (hadRetry) return res.json({ ok: true, cancelledRetry: true });
+		return res.status(409).json({ error: "No run is currently in progress." });
+	}
 	res.json({ ok: true });
 });
 

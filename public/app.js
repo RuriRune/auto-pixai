@@ -10,6 +10,7 @@ const cancelBtn = document.getElementById("cancelBtn");
 const liveProgressCard = document.getElementById("liveProgressCard");
 const liveTimer = document.getElementById("liveTimer");
 const liveStep = document.getElementById("liveStep");
+const retryNotice = document.getElementById("retryNotice");
 const historyBody = document.querySelector("#historyTable tbody");
 const gallery = document.getElementById("gallery");
 const lightbox = document.getElementById("lightbox");
@@ -33,6 +34,7 @@ setInterval(() => {
 function badgeClass(status) {
 	if (status === "SUCCESS" || status === "ALREADY_CLAIMED") return "ok";
 	if (status === "COOKIES_MISSING" || status === "COOKIES_INVALID" || status === "COOKIES_EXPIRED") return "bad";
+	if (status === "DEVICE_UNREACHABLE") return "bad";
 	if (status === "CANCELLED") return "neutral";
 	if (!status) return "neutral";
 	return "warn";
@@ -55,9 +57,18 @@ async function refreshStatus() {
 		statusMessage.textContent = "";
 	}
 
+	if (data.retryAt && !data.isRunning) {
+		const mins = Math.max(1, Math.round((data.retryAt - Date.now()) / 60000));
+		retryNotice.textContent = `Device unreachable — retrying automatically in ~${mins} min (attempt ${data.retryCount} of ${data.maxRetries}).`;
+		retryNotice.style.display = "";
+	} else {
+		retryNotice.style.display = "none";
+	}
+
 	runBtn.disabled = data.isRunning;
 	runBtn.textContent = data.isRunning ? "Running…" : "Run now";
-	cancelBtn.style.display = data.isRunning ? "" : "none";
+	cancelBtn.style.display = data.isRunning || data.retryAt ? "" : "none";
+	cancelBtn.textContent = data.isRunning ? "Cancel run" : "Cancel retry";
 
 	if (data.isRunning) {
 		liveProgressCard.style.display = "";

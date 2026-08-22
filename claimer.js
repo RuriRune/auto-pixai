@@ -159,9 +159,13 @@ async function runClaim(trigger = "manual") {
 		} else {
 			log("ERROR", `Attempt failed: ${e.message}`);
 			const isTimeout = e.message.includes("timed out after");
+			// Device-unreachable gets its own status so it can be retried
+			// later automatically — it's usually transient (the phone's
+			// wireless ADB daemon drops after idle and comes back).
+			const isUnreachable = e.message.includes("Could not connect to the device");
 			result = {
-				status: isTimeout ? "TIMEOUT" : "ERROR",
-				message: isTimeout
+				status: isUnreachable ? "DEVICE_UNREACHABLE" : isTimeout ? "TIMEOUT" : "ERROR",
+				message: isUnreachable || isTimeout
 					? e.message
 					: `${e.message} (check the Android device is powered on, connected to WiFi, and reachable at ANDROID_ADB_HOST:ANDROID_ADB_PORT)`,
 			};
